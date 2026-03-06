@@ -58,6 +58,7 @@ const pulseAnimation = keyframes`
     transform: scale(1);
   }
 `;
+const HIDDEN_NEXT_THREE_STORAGE_KEY = 'timeTracker:hiddenNextThreeByDate:v1';
 
 type PlannedItemPreview = {
   id: string;
@@ -91,6 +92,17 @@ export default function TimeTracker() {
   const [editEntryData, setEditEntryData] = useState({
     startTime: '',
     endTime: '',
+  });
+  const [hiddenNextItemsByDate, setHiddenNextItemsByDate] = useState<Record<string, string[]>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem(HIDDEN_NEXT_THREE_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
   });
 
   const queryClient = useQueryClient();
@@ -192,80 +204,6 @@ export default function TimeTracker() {
     },
   });
 
-  const removePlannedItemMutation = useMutation({
-    mutationFn: async (item: PlannedItemPreview) => {
-      if (!dailyPlanning) return null;
-
-      const orderedItems = [
-        ...(dailyPlanning.plannedTasks || []).map((plannedTask, index) => ({
-          type: 'task' as const,
-          item: plannedTask,
-          originalIndex: index,
-        })),
-        ...(dailyPlanning.plannedActivities || []).map((plannedActivity, index) => ({
-          type: 'activity' as const,
-          item: plannedActivity,
-          originalIndex: (dailyPlanning.plannedTasks?.length || 0) + index,
-        })),
-      ].sort((a, b) => {
-        const aPriority = typeof a.item.priority === 'number' ? a.item.priority : Number.MAX_SAFE_INTEGER;
-        const bPriority = typeof b.item.priority === 'number' ? b.item.priority : Number.MAX_SAFE_INTEGER;
-        if (aPriority !== bPriority) return aPriority - bPriority;
-
-        const aTime = a.item.plannedStartTime ? new Date(a.item.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
-        const bTime = b.item.plannedStartTime ? new Date(b.item.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
-        if (aTime !== bTime) return aTime - bTime;
-
-        return a.originalIndex - b.originalIndex;
-      });
-
-      const remainingItems = orderedItems.filter((entry) => {
-        const entryId =
-          entry.type === 'task'
-            ? entry.item.task?._id
-            : entry.item.activity?._id;
-        return !(entry.type === item.type && entryId === item.id);
-      });
-
-      const reprioritizedItems = remainingItems.map((entry, index) => ({
-        ...entry,
-        newPriority: index + 1,
-      }));
-
-      const updatedPlannedTasks = reprioritizedItems
-        .filter((entry) => entry.type === 'task')
-        .map((entry) => ({
-          task: entry.item.task?._id || entry.item.task,
-          plannedStartTime: entry.item.plannedStartTime,
-          plannedDuration: entry.item.plannedDuration,
-          actualDuration: entry.item.actualDuration,
-          completed: entry.item.completed,
-          priority: entry.newPriority,
-        }));
-
-      const updatedPlannedActivities = reprioritizedItems
-        .filter((entry) => entry.type === 'activity')
-        .map((entry) => ({
-          activity: entry.item.activity?._id || entry.item.activity,
-          plannedStartTime: entry.item.plannedStartTime,
-          plannedDuration: entry.item.plannedDuration,
-          actualDuration: entry.item.actualDuration,
-          completed: entry.item.completed,
-          priority: entry.newPriority,
-        }));
-
-      return planningApi.updatePlanning(selectedDate.format('YYYY-MM-DD'), {
-        plannedTasks: updatedPlannedTasks as any,
-        plannedActivities: updatedPlannedActivities as any,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
-      queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
-      queryClient.invalidateQueries({ queryKey: ['dailySummary'] });
-    },
-  });
-
   const createManualEntryMutation = useMutation({
     mutationFn: async (data: any) => {
       // We'll need to create a custom endpoint for manual entries
@@ -344,6 +282,24 @@ export default function TimeTracker() {
   const formatDateTime = (dateTime: string): string => {
     return dayjs(dateTime).format('HH:mm');
   };
+  const selectedDateKey = selectedDate.format('YYYY-MM-DD');
+  const getPlannedItemKey = (item: PlannedItemPreview) => `${item.type}:${item.id}`;
+  const hiddenKeysForSelectedDate = hiddenNextItemsByDate[selectedDateKey] || [];
+  const isHiddenFromNextThree = (item: PlannedItemPreview) =>
+    hiddenKeysForSelectedDate.includes(getPlannedItemKey(item));
+  const hideFromNextThree = (item: PlannedItemPreview) => {
+    const itemKey = getPlannedItemKey(item);
+    setHiddenNextItemsByDate((prev) => {
+      const currentDateHidden = prev[selectedDateKey] || [];
+      if (currentDateHidden.includes(itemKey)) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [selectedDateKey]: [...currentDateHidden, itemKey],
+      };
+    });
+  };
   const shouldHideFromNextThree = (item: PlannedItemPreview): boolean => {
     if (item.type !== 'activity') return false;
     const normalizedTitle = item.title.trim().toLowerCase();
@@ -354,6 +310,15 @@ export default function TimeTracker() {
       normalizedTitle.includes('jackie')
     );
   };
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(HIDDEN_NEXT_THREE_STORAGE_KEY, JSON.stringify(hiddenNextItemsByDate));
+    } catch {
+      // ignore storage errors
+    }
+  }, [hiddenNextItemsByDate]);
 
   const nextThreeItems: PlannedItemPreview[] = dailyPlanning
     ? [
@@ -383,6 +348,7 @@ export default function TimeTracker() {
         .filter((item) => {
           if (item.completed) return false;
           if (shouldHideFromNextThree(item)) return false;
+          if (isHiddenFromNextThree(item)) return false;
           if (item.type === 'task') {
             return item.id !== activeEntry?.task?._id;
           }
@@ -772,8 +738,7 @@ export default function TimeTracker() {
                                 }
                                 disabled={
                                   startFromEntryMutation.isPending ||
-                                  completePlannedItemMutation.isPending ||
-                                  removePlannedItemMutation.isPending
+                                  completePlannedItemMutation.isPending
                                 }
                                 title={`Switch and start this ${item.type}`}
                               >
@@ -785,8 +750,7 @@ export default function TimeTracker() {
                                 onClick={() => completePlannedItemMutation.mutate(item)}
                                 disabled={
                                   startFromEntryMutation.isPending ||
-                                  completePlannedItemMutation.isPending ||
-                                  removePlannedItemMutation.isPending
+                                  completePlannedItemMutation.isPending
                                 }
                                 title={`Mark this ${item.type} as completed`}
                               >
@@ -795,13 +759,12 @@ export default function TimeTracker() {
                               <IconButton
                                 size="small"
                                 color="error"
-                                onClick={() => removePlannedItemMutation.mutate(item)}
+                                onClick={() => hideFromNextThree(item)}
                                 disabled={
                                   startFromEntryMutation.isPending ||
-                                  completePlannedItemMutation.isPending ||
-                                  removePlannedItemMutation.isPending
+                                  completePlannedItemMutation.isPending
                                 }
-                                title={`Remove this ${item.type} from daily schedule`}
+                                title={`Hide this ${item.type} from Next 3 list`}
                               >
                                 <DeleteIcon fontSize="small" />
                               </IconButton>
