@@ -11,7 +11,6 @@ import {
   InputLabel,
   Select,
   MenuItem,
-  TextField,
   Stack,
 } from '@mui/material';
 import {
@@ -26,6 +25,7 @@ import { Activity, TimeEntry, Task } from '../types';
 
 interface PomodoroTimerProps {
   onTimerComplete?: () => void;
+  compact?: boolean;
 }
 
 // Pomodoro Settings - TODO: Move to settings page in the future
@@ -33,18 +33,33 @@ const POMODORO_SETTINGS = {
   WORK_DURATION: 60, // minutes
   BREAK_DURATION: 10, // minutes
 };
+const POMODORO_COMPLETION_NOTIFICATION_KEY = 'pomodoro:lastCompletedEntryKey';
 
-export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
+export default function PomodoroTimer({ onTimerComplete, compact = false }: PomodoroTimerProps) {
   const [selectedItem, setSelectedItem] = useState<string>(''); // Can be activity ID or task ID
   const [selectedType, setSelectedType] = useState<'activity' | 'task'>('activity');
   const [isBreak, setIsBreak] = useState(false);
   const [duration, setDuration] = useState(POMODORO_SETTINGS.WORK_DURATION); // minutes
   const [timeLeft, setTimeLeft] = useState(POMODORO_SETTINGS.WORK_DURATION * 60); // seconds
   const [isRunning, setIsRunning] = useState(false);
-  const [notes, setNotes] = useState('');
+  const notes = '';
   
   const queryClient = useQueryClient();
   const intervalRef = useRef<number | null>(null);
+  const hasCompletionBeenNotified = (completionKey: string): boolean => {
+    try {
+      return window.sessionStorage.getItem(POMODORO_COMPLETION_NOTIFICATION_KEY) === completionKey;
+    } catch {
+      return false;
+    }
+  };
+  const markCompletionAsNotified = (completionKey: string) => {
+    try {
+      window.sessionStorage.setItem(POMODORO_COMPLETION_NOTIFICATION_KEY, completionKey);
+    } catch {
+      // ignore storage errors
+    }
+  };
 
   // Request notification permission on component mount
   React.useEffect(() => {
@@ -251,27 +266,32 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
 
   // Handle timer completion when timeLeft reaches 0
   useEffect(() => {
-    if (timeLeft === 0 && !isRunning) {
-      // Trigger notifications and completion handler
-      handleTimerComplete();
+    if (timeLeft !== 0 || isRunning) return;
+    if (!activeEntry || !activeEntry.isPomodoro) return;
 
-      // Stop the time entry ONLY if the current selected activity is "Break Time"
-      if (activeEntry && selectedType === 'activity') {
-        const currentActivity = activities.find(a => a._id === selectedItem);
-        const isBreakActivitySelected = !!currentActivity && 
-          currentActivity.name && 
-          currentActivity.name.trim().toLowerCase() === 'break time';
-        
-        if (isBreakActivitySelected) {
-          stopTimerMutation.mutate({ 
-            id: activeEntry._id, 
-            notes: notes || 'Break completed',
-            keepTimerRunning: true 
-          });
-        }
+    const completionKey = `${activeEntry._id}:${activeEntry.startTime}`;
+    if (hasCompletionBeenNotified(completionKey)) return;
+    markCompletionAsNotified(completionKey);
+
+    // Trigger notifications and completion handler
+    handleTimerComplete();
+
+    // Stop the time entry ONLY if the current selected activity is "Break Time"
+    if (selectedType === 'activity') {
+      const currentActivity = activities.find(a => a._id === selectedItem);
+      const isBreakActivitySelected = !!currentActivity && 
+        currentActivity.name && 
+        currentActivity.name.trim().toLowerCase() === 'break time';
+      
+      if (isBreakActivitySelected) {
+        stopTimerMutation.mutate({ 
+          id: activeEntry._id, 
+          notes: notes || 'Break completed',
+          keepTimerRunning: true 
+        });
       }
     }
-  }, [timeLeft, isRunning]); // Simplified dependencies
+  }, [timeLeft, isRunning, activeEntry, selectedType, selectedItem, activities]);
 
   // Sync with active entry and handle timer state
   useEffect(() => {
@@ -398,6 +418,12 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
     setIsRunning(false);
   };
 
+  const handleStopTask = () => {
+    if (!activeEntry) return;
+    stopTimerMutation.mutate({ id: activeEntry._id, notes: notes || 'Task stopped manually' });
+    setIsRunning(false);
+  };
+
   const handleReset = () => {
     const currentDuration = isBreak ? POMODORO_SETTINGS.BREAK_DURATION : POMODORO_SETTINGS.WORK_DURATION;
     setDuration(currentDuration);
@@ -484,6 +510,12 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
   };
 
   const progress = ((duration * 60 - timeLeft) / (duration * 60)) * 100;
+  const breakActivity = activities.find(
+    a => a.name && a.name.trim().toLowerCase() === 'break time'
+  );
+  const selectableActivities = activities.filter(
+    a => !(a.name && a.name.trim().toLowerCase() === 'break time')
+  );
   
   const selectedItemData = selectedType === 'activity' 
     ? activities.find(a => a._id === selectedItem)
@@ -496,13 +528,13 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
     : 'Select an item';
 
   return (
-    <Card sx={{ maxWidth: 400, mx: 'auto' }}>
-      <CardContent>
-        <Typography variant="h5" component="h2" gutterBottom textAlign="center">
+    <Card sx={{ width: '100%', height: compact ? '100%' : 'auto' }}>
+      <CardContent sx={{ height: compact ? '100%' : 'auto', overflowY: compact ? 'auto' : 'visible', py: compact ? 1.5 : 2 }}>
+        <Typography variant={compact ? 'h6' : 'h5'} component="h2" gutterBottom textAlign="center">
           Pomodoro Timer
         </Typography>
         
-        <Box sx={{ textAlign: 'center', my: 3 }}>
+        <Box sx={{ textAlign: 'center', my: compact ? 1.25 : 3 }}>
           <Typography 
             variant="h6" 
             sx={{ 
@@ -514,7 +546,7 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
             {isBreak ? '☕ Break Time' : '🍅 Work Time'}
           </Typography>
           
-          <Typography variant="h3" sx={{ fontFamily: 'monospace', fontWeight: 'bold' }}>
+          <Typography variant={compact ? 'h4' : 'h3'} sx={{ fontFamily: 'monospace', fontWeight: 'bold' }}>
             {formatTime(timeLeft)}
           </Typography>
           
@@ -530,7 +562,7 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
           </Typography>
         </Box>
 
-        <Stack spacing={2}>
+        <Stack spacing={compact ? 1.25 : 2}>
           <FormControl fullWidth>
             <InputLabel>Activity or Task</InputLabel>
             <Select
@@ -543,7 +575,7 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
               <MenuItem disabled sx={{ fontWeight: 'bold', color: 'primary.main' }}>
                 📋 Activities (Repetitive)
               </MenuItem>
-              {activities.map((activity) => (
+              {selectableActivities.map((activity) => (
                 <MenuItem key={`activity:${activity._id}`} value={`activity:${activity._id}`} sx={{ pl: 3 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <Box
@@ -558,6 +590,11 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
                   </Box>
                 </MenuItem>
               ))}
+              {breakActivity && selectedType === 'activity' && selectedItem === breakActivity._id && (
+                <MenuItem value={`activity:${breakActivity._id}`} sx={{ display: 'none' }}>
+                  {breakActivity.name}
+                </MenuItem>
+              )}
               
               {/* Tasks Section */}
               <MenuItem disabled sx={{ fontWeight: 'bold', color: 'secondary.main', mt: 1 }}>
@@ -580,28 +617,6 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
               ))}
             </Select>
           </FormControl>
-
-          <TextField
-            label="Notes (optional)"
-            multiline
-            rows={2}
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            disabled={isRunning}
-          />
-
-          <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1, flexWrap: 'wrap' }}>
-            <Button
-              variant={isBreak ? 'outlined' : 'contained'}
-              onClick={handleSwitchMode}
-              disabled={isRunning}
-              size="small"
-              color={isBreak ? 'success' : 'primary'}
-            >
-              {isBreak ? '🍅 Work Mode' : '☕ Break Mode'}
-            </Button>
-          </Box>
-          
           <Box sx={{ display: 'flex', justifyContent: 'center', gap: 1 }}>
             {!isRunning ? (
               <>
@@ -610,10 +625,19 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
                   startIcon={<PlayIcon />}
                   onClick={handleStart}
                   disabled={!selectedItem || startTimerMutation.isPending || startTaskMutation.isPending}
-                  size="large"
+                  size={compact ? 'medium' : 'large'}
                   color={isBreak ? 'success' : 'primary'}
                 >
                   Start {isBreak ? 'Break' : (selectedType === 'task' ? 'Task' : 'Activity')}
+                </Button>
+                <Button
+                  variant={isBreak ? 'outlined' : 'contained'}
+                  onClick={handleSwitchMode}
+                  disabled={isRunning}
+                  size={compact ? 'medium' : 'large'}
+                  color={isBreak ? 'success' : 'primary'}
+                >
+                  {isBreak ? '🍅 Work Mode' : '☕ Break Mode'}
                 </Button>
                 {/* Show Reset button when there's an active entry or when timer has been used */}
                 {(activeEntry || timeLeft !== (isBreak ? POMODORO_SETTINGS.BREAK_DURATION : POMODORO_SETTINGS.WORK_DURATION) * 60) && (
@@ -621,7 +645,7 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
                     variant="outlined"
                     startIcon={<ResetIcon />}
                     onClick={handleReset}
-                    size="large"
+                    size={compact ? 'medium' : 'large'}
                     color="primary"
                   >
                     Reset
@@ -635,20 +659,41 @@ export default function PomodoroTimer({ onTimerComplete }: PomodoroTimerProps) {
                   startIcon={<StopIcon />}
                   onClick={handleStop}
                   disabled={stopTimerMutation.isPending}
-                  size="large"
+                  size={compact ? 'medium' : 'large'}
                   color="secondary"
                 >
                   Stop
                 </Button>
                 <Button
+                  variant={isBreak ? 'outlined' : 'contained'}
+                  onClick={handleSwitchMode}
+                  disabled={isRunning}
+                  size={compact ? 'medium' : 'large'}
+                  color={isBreak ? 'success' : 'primary'}
+                >
+                  {isBreak ? '🍅 Work Mode' : '☕ Break Mode'}
+                </Button>
+                <Button
                   variant="outlined"
                   startIcon={<ResetIcon />}
                   onClick={handleReset}
-                  size="large"
+                  size={compact ? 'medium' : 'large'}
                 >
                   Reset
                 </Button>
               </>
+            )}
+            {activeEntry && (
+              <Button
+                variant="outlined"
+                startIcon={<StopIcon />}
+                onClick={handleStopTask}
+                disabled={stopTimerMutation.isPending}
+                size={compact ? 'medium' : 'large'}
+                color="error"
+              >
+                Stop Task
+              </Button>
             )}
           </Box>
 

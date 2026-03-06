@@ -19,6 +19,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  LinearProgress,
   FormControl,
   InputLabel,
   Select,
@@ -28,15 +29,17 @@ import {
   keyframes,
 } from '@mui/material';
 import {
+  Check as CompleteIcon,
   Delete as DeleteIcon,
   Add as AddIcon,
-  Stop as StopIcon,
   Edit as EditIcon,
+  PlayArrow as PlayIcon,
+  CalendarMonth as CalendarIcon,
 } from '@mui/icons-material';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import dayjs from 'dayjs';
-import { timeEntriesApi, activitiesApi, tasksApi } from '../services/api';
+import { timeEntriesApi, activitiesApi, tasksApi, planningApi } from '../services/api';
 import { QuadrantColors, QuadrantLabels } from '../types';
 import PomodoroTimer from '../components/PomodoroTimer';
 
@@ -56,13 +59,27 @@ const pulseAnimation = keyframes`
   }
 `;
 
+type PlannedItemPreview = {
+  id: string;
+  type: 'task' | 'activity';
+  title: string;
+  categoryName: string;
+  categoryColor: string;
+  quadrant: number;
+  priority: number;
+  plannedStartTime?: string;
+};
+
 export default function TimeTracker() {
   const [selectedDate, setSelectedDate] = useState(dayjs());
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [entryToDelete, setEntryToDelete] = useState<string | null>(null);
   const [entryToEdit, setEntryToEdit] = useState<any>(null);
+  const [switchConfirmOpen, setSwitchConfirmOpen] = useState(false);
+  const [entryToSwitch, setEntryToSwitch] = useState<any>(null);
   const [currentTime, setCurrentTime] = useState(dayjs());
   const [manualEntry, setManualEntry] = useState({
     item: '',
@@ -99,6 +116,16 @@ export default function TimeTracker() {
     refetchInterval: 5000,
   });
 
+  const { data: dailyPlanning } = useQuery({
+    queryKey: ['dailyPlanning', selectedDate.format('YYYY-MM-DD')],
+    queryFn: () => planningApi.getPlanning(selectedDate.format('YYYY-MM-DD')),
+  });
+
+  const { data: dailySummary } = useQuery({
+    queryKey: ['dailySummary', selectedDate.format('YYYY-MM-DD')],
+    queryFn: () => timeEntriesApi.getDailySummary(selectedDate.format('YYYY-MM-DD')),
+  });
+
   const deleteEntryMutation = useMutation({
     mutationFn: timeEntriesApi.delete,
     onSuccess: () => {
@@ -109,12 +136,133 @@ export default function TimeTracker() {
     },
   });
 
-  const stopTimerMutation = useMutation({
-    mutationFn: (data: { id: string; notes?: string }) =>
-      timeEntriesApi.stop(data.id, { notes: data.notes }),
+  const startFromEntryMutation = useMutation({
+    mutationFn: async (entry: any) => {
+      const localDate = selectedDate.format('YYYY-MM-DD');
+      const isPomodoro = activeEntry?.isPomodoro || false;
+
+      if (activeEntry?.isActive && activeEntry._id !== entry._id) {
+        await timeEntriesApi.stop(activeEntry._id, {
+          notes: `Switched to: ${entry.activity?.name || entry.task?.title || 'selected item'}`,
+        });
+      }
+
+      if (entry.task?._id) {
+        return timeEntriesApi.startWithTask({
+          task: entry.task._id,
+          isPomodoro,
+          notes: `Started task: ${entry.task.title}`,
+          localDate,
+        });
+      }
+
+      if (entry.activity?._id) {
+        return timeEntriesApi.start({
+          activity: entry.activity._id,
+          isPomodoro,
+          notes: `Started activity: ${entry.activity.name}`,
+          localDate,
+        });
+      }
+
+      return Promise.resolve(null);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['activeTimeEntry'] });
       queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySummary'] });
+      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
+      setSwitchConfirmOpen(false);
+      setEntryToSwitch(null);
+    },
+  });
+
+  const completePlannedItemMutation = useMutation({
+    mutationFn: async (item: PlannedItemPreview) => {
+      const dateKey = selectedDate.format('YYYY-MM-DD');
+      if (item.type === 'task') {
+        return planningApi.completeTask(dateKey, item.id, { completed: true });
+      }
+      return planningApi.completeActivity(dateKey, item.id, { completed: true });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
+      queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySummary'] });
+    },
+  });
+
+  const removePlannedItemMutation = useMutation({
+    mutationFn: async (item: PlannedItemPreview) => {
+      if (!dailyPlanning) return null;
+
+      const orderedItems = [
+        ...(dailyPlanning.plannedTasks || []).map((plannedTask, index) => ({
+          type: 'task' as const,
+          item: plannedTask,
+          originalIndex: index,
+        })),
+        ...(dailyPlanning.plannedActivities || []).map((plannedActivity, index) => ({
+          type: 'activity' as const,
+          item: plannedActivity,
+          originalIndex: (dailyPlanning.plannedTasks?.length || 0) + index,
+        })),
+      ].sort((a, b) => {
+        const aPriority = typeof a.item.priority === 'number' ? a.item.priority : Number.MAX_SAFE_INTEGER;
+        const bPriority = typeof b.item.priority === 'number' ? b.item.priority : Number.MAX_SAFE_INTEGER;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+
+        const aTime = a.item.plannedStartTime ? new Date(a.item.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+        const bTime = b.item.plannedStartTime ? new Date(b.item.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+        if (aTime !== bTime) return aTime - bTime;
+
+        return a.originalIndex - b.originalIndex;
+      });
+
+      const remainingItems = orderedItems.filter((entry) => {
+        const entryId =
+          entry.type === 'task'
+            ? entry.item.task?._id
+            : entry.item.activity?._id;
+        return !(entry.type === item.type && entryId === item.id);
+      });
+
+      const reprioritizedItems = remainingItems.map((entry, index) => ({
+        ...entry,
+        newPriority: index + 1,
+      }));
+
+      const updatedPlannedTasks = reprioritizedItems
+        .filter((entry) => entry.type === 'task')
+        .map((entry) => ({
+          task: entry.item.task?._id || entry.item.task,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.newPriority,
+        }));
+
+      const updatedPlannedActivities = reprioritizedItems
+        .filter((entry) => entry.type === 'activity')
+        .map((entry) => ({
+          activity: entry.item.activity?._id || entry.item.activity,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.newPriority,
+        }));
+
+      return planningApi.updatePlanning(selectedDate.format('YYYY-MM-DD'), {
+        plannedTasks: updatedPlannedTasks as any,
+        plannedActivities: updatedPlannedActivities as any,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
+      queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+      queryClient.invalidateQueries({ queryKey: ['dailySummary'] });
     },
   });
 
@@ -196,6 +344,64 @@ export default function TimeTracker() {
   const formatDateTime = (dateTime: string): string => {
     return dayjs(dateTime).format('HH:mm');
   };
+  const shouldHideFromNextThree = (item: PlannedItemPreview): boolean => {
+    if (item.type !== 'activity') return false;
+    const normalizedTitle = item.title.trim().toLowerCase();
+    return (
+      normalizedTitle === 'break time' ||
+      normalizedTitle === 'jackie' ||
+      normalizedTitle === 'jackie activity' ||
+      normalizedTitle.includes('jackie')
+    );
+  };
+
+  const nextThreeItems: PlannedItemPreview[] = dailyPlanning
+    ? [
+        ...(dailyPlanning.plannedTasks || []).map((pt) => ({
+          id: pt.task._id,
+          type: 'task' as const,
+          title: pt.task.title,
+          categoryName: pt.task.category.name,
+          categoryColor: pt.task.category.color,
+          quadrant: pt.task.quadrant,
+          priority: pt.priority,
+          plannedStartTime: pt.plannedStartTime,
+          completed: pt.completed,
+        })),
+        ...(dailyPlanning.plannedActivities || []).map((pa) => ({
+          id: pa.activity._id,
+          type: 'activity' as const,
+          title: pa.activity.name,
+          categoryName: pa.activity.category.name,
+          categoryColor: pa.activity.category.color,
+          quadrant: pa.activity.quadrant,
+          priority: pa.priority,
+          plannedStartTime: pa.plannedStartTime,
+          completed: pa.completed,
+        })),
+      ]
+        .filter((item) => {
+          if (item.completed) return false;
+          if (shouldHideFromNextThree(item)) return false;
+          if (item.type === 'task') {
+            return item.id !== activeEntry?.task?._id;
+          }
+          return item.id !== activeEntry?.activity?._id;
+        })
+        .sort((a, b) => {
+          const aPriority = typeof a.priority === 'number' ? a.priority : Number.MAX_SAFE_INTEGER;
+          const bPriority = typeof b.priority === 'number' ? b.priority : Number.MAX_SAFE_INTEGER;
+          if (aPriority !== bPriority) return aPriority - bPriority;
+
+          const aTime = a.plannedStartTime ? new Date(a.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+          const bTime = b.plannedStartTime ? new Date(b.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+          if (aTime !== bTime) return aTime - bTime;
+
+          return a.title.localeCompare(b.title);
+        })
+        .slice(0, 3)
+        .reverse()
+    : [];
 
   // Calculate real-time duration for active entries
   const calculateCurrentDuration = (entry: any): number => {
@@ -222,6 +428,51 @@ export default function TimeTracker() {
     }
     return sum;
   }, 0);
+
+  const getProductivityColor = (score: number): string => {
+    if (score >= 80) return 'success.main';
+    if (score >= 60) return 'warning.main';
+    return 'error.main';
+  };
+
+  const workPlannedItems = dailyPlanning ? [
+    ...(dailyPlanning.plannedTasks || []).filter(pt => pt.task?.category?.name === 'Work'),
+    ...(dailyPlanning.plannedActivities || []).filter(pa => pa.activity?.category?.name === 'Work'),
+  ] : [];
+
+  const otherPlannedItems = dailyPlanning ? [
+    ...(dailyPlanning.plannedTasks || []).filter(pt => pt.task?.category?.name !== 'Work'),
+    ...(dailyPlanning.plannedActivities || []).filter(pa => pa.activity?.category?.name !== 'Work'),
+  ] : [];
+
+  const workPlannedCount = workPlannedItems.length;
+  const otherPlannedCount = otherPlannedItems.length;
+
+  const workCompletedCount = workPlannedItems.filter(item => item.completed).length;
+  const otherCompletedCount = otherPlannedItems.filter(item => item.completed).length;
+
+  const workPlannedTime = workPlannedItems.reduce((sum, item) => {
+    const isTask = 'task' in item;
+    return sum + (item.plannedDuration || (isTask ? item.task?.estimatedTime : item.activity?.estimatedDuration) || 0);
+  }, 0);
+
+  const otherPlannedTime = otherPlannedItems.reduce((sum, item) => {
+    const isTask = 'task' in item;
+    return sum + (item.plannedDuration || (isTask ? item.task?.estimatedTime : item.activity?.estimatedDuration) || 0);
+  }, 0);
+
+  const workActualTime = workTime;
+  const otherActualTime = Math.max(0, totalTime - workActualTime);
+  const productivityScore = workPlannedTime > 0
+    ? Math.min(100, Math.round((workActualTime / workPlannedTime) * 100))
+    : 0;
+
+  const workRemainingMinutes = Math.max(0, workPlannedTime - workActualTime);
+  const otherRemainingMinutes = Math.max(0, otherPlannedTime - otherActualTime);
+  const totalRemainingMinutes = workRemainingMinutes + otherRemainingMinutes;
+  const projectedFinishTime = totalRemainingMinutes > 0
+    ? dayjs().add(totalRemainingMinutes, 'minute').format('HH:mm')
+    : 'Done';
 
   // Update current time every minute for duration calculation
   useEffect(() => {
@@ -272,6 +523,22 @@ export default function TimeTracker() {
     setEntryToDelete(null);
   };
 
+  const handleSwitchClick = (entry: any) => {
+    if (entry.isActive) return;
+    setEntryToSwitch(entry);
+    setSwitchConfirmOpen(true);
+  };
+
+  const handleSwitchConfirm = () => {
+    if (!entryToSwitch) return;
+    startFromEntryMutation.mutate(entryToSwitch);
+  };
+
+  const handleSwitchCancel = () => {
+    setSwitchConfirmOpen(false);
+    setEntryToSwitch(null);
+  };
+
   const handleManualEntrySubmit = () => {
     if (!manualEntry.item || !manualEntry.startTime || !manualEntry.endTime) {
       return;
@@ -302,107 +569,121 @@ export default function TimeTracker() {
   };
 
   return (
-    <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4">Time Tracker</Typography>
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          <DatePicker
-            label="Select Date"
-            value={selectedDate}
-            onChange={(date) => setSelectedDate(date || dayjs())}
-            format="MM/DD/YYYY"
-          />
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => setDialogOpen(true)}
-          >
-            Add Manual Entry
-          </Button>
-        </Box>
-      </Box>
-
-      <Grid container spacing={3}>
-        {/* Left Column: Pomodoro Timer */}
-        <Grid item xs={12} md={6}>
-          <PomodoroTimer />
-        </Grid>
-
-        {/* Right Column: Active Timer + Time Entries */}
-        <Grid item xs={12} md={6}>
-          <Stack spacing={3}>
-            {activeEntry ? (
-              <Card sx={{ backgroundColor: 'primary.light' }}>
-                <CardContent>
-                  <Typography variant="h6" gutterBottom color="primary.contrastText">
-                    Active Timer
+    <Box sx={{ height: 'calc(100vh - 88px)', overflow: 'hidden' }}>
+      <Grid container spacing={3} sx={{ height: '100%' }}>
+        {/* Left Column: Pomodoro + Stats */}
+        <Grid item xs={12} md={5} sx={{ height: '100%', minHeight: 0 }}>
+          <Stack spacing={2} sx={{ height: '100%', minHeight: 0 }}>
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', '& > *': { flex: 1, minHeight: 0 } }}>
+              <PomodoroTimer compact />
+            </Box>
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex' }}>
+              <Card sx={{ width: '100%', height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+                <CardContent sx={{ minHeight: 0, overflowY: 'auto', py: 1.5 }}>
+                  <Typography variant="h6" gutterBottom>
+                    📊 Daily Overview
                   </Typography>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                    <Box
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    {selectedDate.format('dddd, MMMM D, YYYY')}
+                  </Typography>
+
+                  <Box sx={{ mt: 1.25 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2">Productivity Score</Typography>
+                      <Typography variant="body2" fontWeight="bold">{productivityScore}%</Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={productivityScore}
                       sx={{
-                        width: 16,
-                        height: 16,
-                        borderRadius: '50%',
-                        backgroundColor: activeEntry.activity?.color || activeEntry.task?.category?.color || '#2196f3',
+                        height: 7,
+                        borderRadius: 4,
+                        '& .MuiLinearProgress-bar': {
+                          backgroundColor: getProductivityColor(productivityScore),
+                        },
                       }}
                     />
-                    <Typography variant="body1" color="primary.contrastText">
-                      {activeEntry.activity?.name || activeEntry.task?.title || 'Unknown'}
-                    </Typography>
-                    <Chip
-                      label={QuadrantLabels[(activeEntry.activity?.quadrant || activeEntry.task?.quadrant || 1)]}
-                      size="small"
-                      sx={{ backgroundColor: QuadrantColors[(activeEntry.activity?.quadrant || activeEntry.task?.quadrant || 1)], color: 'white' }}
-                    />
                   </Box>
-                  <Typography variant="body2" color="primary.contrastText">
-                    Started: {formatDateTime(activeEntry.startTime)}
-                  </Typography>
-                  <Typography variant="h6" color="primary.contrastText" sx={{ mt: 1 }}>
-                    Duration: {formatTime(calculateCurrentDuration(activeEntry))}
-                  </Typography>
-                  <Button
-                    variant="contained"
-                    color="secondary"
-                    startIcon={<StopIcon />}
-                    onClick={() => stopTimerMutation.mutate({ id: activeEntry._id })}
-                    sx={{ mt: 2 }}
-                    fullWidth
-                  >
-                    Stop Timer
-                  </Button>
-                </CardContent>
-              </Card>
-            ) : (
-              <Card>
-                <CardContent>
-                  <Typography variant="h6" color="text.secondary" textAlign="center">
-                    No active timer
-                  </Typography>
-                  <Typography variant="body2" color="text.secondary" textAlign="center">
-                    Start a pomodoro timer to begin tracking time
-                  </Typography>
-                </CardContent>
-              </Card>
-            )}
 
-            <Card>
-              <CardContent>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                  <Box sx={{ mt: 1.25 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                      <Typography variant="body2">Personal Growth Score</Typography>
+                      <Typography variant="body2" fontWeight="bold">
+                        {dailyPlanning?.personalGrowth?.score || 0}%
+                      </Typography>
+                    </Box>
+                    <LinearProgress
+                      variant="determinate"
+                      value={dailyPlanning?.personalGrowth?.score || 0}
+                      sx={{
+                        height: 7,
+                        borderRadius: 4,
+                        '& .MuiLinearProgress-bar': {
+                          backgroundColor: getProductivityColor(dailyPlanning?.personalGrowth?.score || 0),
+                        },
+                      }}
+                    />
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+                      {formatTime(dailyPlanning?.personalGrowth?.actual?.totalTime || 0)} / {formatTime(dailyPlanning?.personalGrowth?.planned?.totalTime || 0)} Personal Development + Health
+                    </Typography>
+                  </Box>
+
+                  <Grid container spacing={1} sx={{ mt: 0.25 }}>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Work Tasks</Typography>
+                      <Typography variant="body2" fontWeight="bold">{workCompletedCount} / {workPlannedCount}</Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Work Time</Typography>
+                      <Typography variant="body2" fontWeight="bold">{formatTime(workActualTime)} / {formatTime(workPlannedTime)}</Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Other Tasks</Typography>
+                      <Typography variant="body2" fontWeight="bold">{otherCompletedCount} / {otherPlannedCount}</Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Other Time</Typography>
+                      <Typography variant="body2" fontWeight="bold">{formatTime(otherActualTime)} / {formatTime(otherPlannedTime)}</Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Remaining</Typography>
+                      <Typography variant="body2" fontWeight="bold">{formatTime(totalRemainingMinutes)}</Typography>
+                    </Grid>
+                    <Grid item xs={6}>
+                      <Typography variant="caption" color="text.secondary">Projected Finish</Typography>
+                      <Typography variant="body2" fontWeight="bold">{projectedFinishTime}</Typography>
+                    </Grid>
+                  </Grid>
+                </CardContent>
+              </Card>
+            </Box>
+          </Stack>
+        </Grid>
+
+        {/* Right Column: Time Entries */}
+        <Grid item xs={12} md={7} sx={{ height: '100%', minHeight: 0, display: 'flex' }}>
+          <Card sx={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <CardContent sx={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <Typography variant="h6">
                     Time Entries - {selectedDate.format('MMMM D, YYYY')}
                   </Typography>
-                  <Box sx={{ textAlign: 'right' }}>
-                    <Typography variant="h6" color="primary">
-                      Total: {formatTime(totalTime)}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Work: {formatTime(workTime)}
-                    </Typography>
-                  </Box>
+                  <IconButton size="small" onClick={() => setDatePickerOpen(true)} title="Select date">
+                    <CalendarIcon fontSize="small" />
+                  </IconButton>
                 </Box>
-                
-                <TableContainer component={Paper} variant="outlined">
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<AddIcon />}
+                  onClick={() => setDialogOpen(true)}
+                >
+                  Add Manual Entry
+                </Button>
+              </Box>
+
+              <TableContainer component={Paper} variant="outlined" sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
                   <Table size="small">
                     <TableHead>
                       <TableRow>
@@ -416,6 +697,118 @@ export default function TimeTracker() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
+                      {nextThreeItems.map((item) => (
+                        <TableRow key={`planned-${item.type}-${item.id}`} sx={{ backgroundColor: 'action.hover' }}>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Box
+                                sx={{
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: '50%',
+                                  backgroundColor: item.categoryColor,
+                                }}
+                              />
+                              <Typography variant="body2" sx={{ fontSize: '0.85rem' }}>
+                                {item.title}
+                                <Chip
+                                  label="Planned"
+                                  size="small"
+                                  sx={{ ml: 1, fontSize: '0.6rem', height: '16px' }}
+                                />
+                                <Chip
+                                  label={item.type === 'task' ? 'Task' : 'Activity'}
+                                  size="small"
+                                  sx={{ ml: 0.5, fontSize: '0.6rem', height: '16px' }}
+                                />
+                              </Typography>
+                            </Box>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                              {item.categoryName}
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Chip
+                              label={`${item.quadrant}`}
+                              size="small"
+                              sx={{
+                                backgroundColor: QuadrantColors[item.quadrant as keyof typeof QuadrantColors],
+                                color: 'white',
+                                width: 24,
+                                height: 20,
+                                fontSize: '0.7rem',
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                              —
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                              —
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                              —
+                            </Typography>
+                          </TableCell>
+                          <TableCell>
+                            <Box sx={{ display: 'flex', gap: 1 }}>
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                onClick={() =>
+                                  handleSwitchClick({
+                                    isActive: false,
+                                    ...(item.type === 'task'
+                                      ? { task: { _id: item.id, title: item.title } }
+                                      : { activity: { _id: item.id, name: item.title } }),
+                                  })
+                                }
+                                disabled={
+                                  startFromEntryMutation.isPending ||
+                                  completePlannedItemMutation.isPending ||
+                                  removePlannedItemMutation.isPending
+                                }
+                                title={`Switch and start this ${item.type}`}
+                              >
+                                <PlayIcon fontSize="small" />
+                              </IconButton>
+                              <IconButton
+                                size="small"
+                                color="success"
+                                onClick={() => completePlannedItemMutation.mutate(item)}
+                                disabled={
+                                  startFromEntryMutation.isPending ||
+                                  completePlannedItemMutation.isPending ||
+                                  removePlannedItemMutation.isPending
+                                }
+                                title={`Mark this ${item.type} as completed`}
+                              >
+                                <CompleteIcon fontSize="small" />
+                              </IconButton>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                onClick={() => removePlannedItemMutation.mutate(item)}
+                                disabled={
+                                  startFromEntryMutation.isPending ||
+                                  completePlannedItemMutation.isPending ||
+                                  removePlannedItemMutation.isPending
+                                }
+                                title={`Remove this ${item.type} from daily schedule`}
+                              >
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </Box>
+                          </TableCell>
+                        </TableRow>
+                      ))}
                       {timeEntries.map((entry) => {
                         const itemName = entry.activity?.name || entry.task?.title || 'Unknown';
                         const itemColor = entry.activity?.color || entry.task?.category?.color || '#2196f3';
@@ -507,6 +900,17 @@ export default function TimeTracker() {
                             </TableCell>
                             <TableCell>
                               <Box sx={{ display: 'flex', gap: 1 }}>
+                                {!entry.isActive && (
+                                  <IconButton
+                                    size="small"
+                                    color="success"
+                                    onClick={() => handleSwitchClick(entry)}
+                                    disabled={startFromEntryMutation.isPending}
+                                    title="Switch and start this item"
+                                  >
+                                    <PlayIcon fontSize="small" />
+                                  </IconButton>
+                                )}
                                 <IconButton
                                   size="small"
                                   color="primary"
@@ -530,7 +934,7 @@ export default function TimeTracker() {
                           </TableRow>
                         );
                       })}
-                      {timeEntries.length === 0 && (
+                      {timeEntries.length === 0 && nextThreeItems.length === 0 && (
                         <TableRow>
                           <TableCell colSpan={7} align="center">
                             <Typography variant="body2" color="text.secondary">
@@ -544,9 +948,27 @@ export default function TimeTracker() {
                 </TableContainer>
               </CardContent>
             </Card>
-          </Stack>
         </Grid>
       </Grid>
+
+      {/* Date Picker Dialog */}
+      <Dialog open={datePickerOpen} onClose={() => setDatePickerOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Select Date</DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <DatePicker
+            value={selectedDate}
+            onChange={(date) => {
+              setSelectedDate(date || dayjs());
+              setDatePickerOpen(false);
+            }}
+            format="MM/DD/YYYY"
+            slotProps={{ textField: { fullWidth: true } }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDatePickerOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Manual Entry Dialog */}
       <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} maxWidth="sm" fullWidth>
@@ -646,7 +1068,7 @@ export default function TimeTracker() {
           <Button 
             variant="contained"
             onClick={handleManualEntrySubmit}
-            disabled={!manualEntry.item || !manualEntry.startTime || !manualEntry.endTime || createManualEntryMutation.isPending}
+            disabled={createManualEntryMutation.isPending}
           >
             Add Entry
           </Button>
@@ -706,6 +1128,28 @@ export default function TimeTracker() {
             disabled={!editEntryData.startTime || !editEntryData.endTime || updateTimeEntryMutation.isPending}
           >
             Update Times
+          </Button>
+        </DialogActions>
+      </Dialog>
+      {/* Switch Confirmation Dialog */}
+      <Dialog open={switchConfirmOpen} onClose={handleSwitchCancel} maxWidth="xs" fullWidth>
+        <DialogTitle>Switch to selected item?</DialogTitle>
+        <DialogContent>
+          <Typography>
+            {activeEntry
+              ? `If you continue, the current active timer will stop and switch to "${entryToSwitch?.activity?.name || entryToSwitch?.task?.title || 'selected item'}".`
+              : `Start tracking "${entryToSwitch?.activity?.name || entryToSwitch?.task?.title || 'selected item'}"?`}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleSwitchCancel}>Cancel</Button>
+          <Button
+            variant="contained"
+            color="warning"
+            onClick={handleSwitchConfirm}
+            disabled={startFromEntryMutation.isPending}
+          >
+            Continue
           </Button>
         </DialogActions>
       </Dialog>

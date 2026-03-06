@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -23,6 +23,9 @@ import {
   Assignment as TaskIcon,
   Timeline as TimelineIcon,
   PlayCircle as ActivityIcon,
+  SwapVert as ReorderIcon,
+  ArrowUpward as MoveUpIcon,
+  ArrowDownward as MoveDownIcon,
 } from '@mui/icons-material';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -41,6 +44,9 @@ export default function DailyPlanning() {
   const [currentTime, setCurrentTime] = useState(dayjs());
 
   const queryClient = useQueryClient();
+  const autoCompletingItemsRef = useRef<Set<string>>(new Set());
+  const getNameCategoryKey = (name?: string, categoryName?: string) =>
+    `${(name || '').trim().toLowerCase()}::${(categoryName || '').trim().toLowerCase()}`;
 
   const { data: planning, isLoading } = useQuery({
     queryKey: ['dailyPlanning', selectedDate.format('YYYY-MM-DD')],
@@ -99,6 +105,225 @@ export default function DailyPlanning() {
     },
   });
 
+  const scheduledItems = useMemo(
+    () =>
+      [
+        ...(planning?.plannedTasks?.map((pt) => ({ type: 'task' as const, item: pt })) || []),
+        ...(planning?.plannedActivities?.map((pa) => ({ type: 'activity' as const, item: pa })) || []),
+      ].sort((a, b) => {
+        const aPriority = a.item.priority;
+        const bPriority = b.item.priority;
+        if (aPriority !== bPriority) return aPriority - bPriority;
+
+        const aTime = a.item.plannedStartTime;
+        const bTime = b.item.plannedStartTime;
+        if (!aTime && !bTime) return 0;
+        if (!aTime) return 1;
+        if (!bTime) return -1;
+        return new Date(aTime).getTime() - new Date(bTime).getTime();
+      }),
+    [planning]
+  );
+
+  const moveScheduledPriorityMutation = useMutation({
+    mutationFn: async (orderedItems: Array<{ type: 'task' | 'activity'; item: any }>) => {
+      const reprioritizedItems = orderedItems.map((entry, index) => ({
+        ...entry,
+        priority: index + 1,
+      }));
+
+      const updatedPlannedTasks = reprioritizedItems
+        .filter((entry) => entry.type === 'task')
+        .map((entry) => ({
+          task: entry.item.task?._id || entry.item.task,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.priority,
+        }));
+
+      const updatedPlannedActivities = reprioritizedItems
+        .filter((entry) => entry.type === 'activity')
+        .map((entry) => ({
+          activity: entry.item.activity?._id || entry.item.activity,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.priority,
+        }));
+
+      return planningApi.updatePlanning(selectedDate.format('YYYY-MM-DD'), {
+        plannedTasks: updatedPlannedTasks as any,
+        plannedActivities: updatedPlannedActivities as any,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
+      queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+    },
+  });
+
+  const handleMoveScheduledItem = (currentIndex: number, direction: 'up' | 'down') => {
+    if (moveScheduledPriorityMutation.isPending) return;
+
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= scheduledItems.length) return;
+
+    const reordered = [...scheduledItems];
+    [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+    moveScheduledPriorityMutation.mutate(reordered);
+  };
+
+  const reorderPlanningMutation = useMutation({
+    mutationFn: async () => {
+      if (!planning) return null;
+
+      const previousDate = selectedDate.subtract(1, 'day').format('YYYY-MM-DD');
+      const previousDayEntries = await timeEntriesApi.getAll({ date: previousDate });
+
+      const combinedItems = [
+        ...(planning.plannedTasks || []).map((pt, index) => ({
+          type: 'task' as const,
+          item: pt,
+          itemId: pt.task._id,
+          categoryName: pt.task.category?.name || 'Uncategorized',
+          originalIndex: index,
+        })),
+        ...(planning.plannedActivities || []).map((pa, index) => ({
+          type: 'activity' as const,
+          item: pa,
+          itemId: pa.activity._id,
+          categoryName: pa.activity.category?.name || 'Uncategorized',
+          originalIndex: (planning.plannedTasks?.length || 0) + index,
+        })),
+      ];
+
+      if (!combinedItems.length) return planning;
+
+      const safePriority = (value: number | undefined, fallback: number) =>
+        typeof value === 'number' ? value : fallback;
+      const safeStartTime = (value?: string) =>
+        value ? new Date(value).getTime() : Number.MAX_SAFE_INTEGER;
+
+      const sortedCurrent = [...combinedItems].sort((a, b) => {
+        const priorityDiff =
+          safePriority(a.item.priority, a.originalIndex + 1) -
+          safePriority(b.item.priority, b.originalIndex + 1);
+        if (priorityDiff !== 0) return priorityDiff;
+
+        const timeDiff = safeStartTime(a.item.plannedStartTime) - safeStartTime(b.item.plannedStartTime);
+        if (timeDiff !== 0) return timeDiff;
+
+        return a.originalIndex - b.originalIndex;
+      });
+
+      const categoryOrder: string[] = [];
+      sortedCurrent.forEach((entry) => {
+        if (!categoryOrder.includes(entry.categoryName)) {
+          categoryOrder.push(entry.categoryName);
+        }
+      });
+
+      const previousCategoryOrder: Record<string, Record<string, number>> = {};
+      const previousCategoryCounter: Record<string, number> = {};
+
+      previousDayEntries
+        .filter((entry) => entry.task?._id || entry.activity?._id)
+        .sort(
+          (a, b) =>
+            new Date(a.startTime).getTime() -
+            new Date(b.startTime).getTime()
+        )
+        .forEach((entry) => {
+          const isTaskEntry = !!entry.task?._id;
+          const entryType = isTaskEntry ? 'task' : 'activity';
+          const entryId = isTaskEntry ? entry.task!._id : entry.activity!._id;
+          const categoryName =
+            entry.task?.category?.name ||
+            entry.activity?.category?.name ||
+            'Uncategorized';
+          const trackingKey = `${entryType}:${entryId}`;
+
+          if (!previousCategoryOrder[categoryName]) {
+            previousCategoryOrder[categoryName] = {};
+            previousCategoryCounter[categoryName] = 0;
+          }
+
+          if (previousCategoryOrder[categoryName][trackingKey] === undefined) {
+            previousCategoryOrder[categoryName][trackingKey] =
+              previousCategoryCounter[categoryName];
+            previousCategoryCounter[categoryName] += 1;
+          }
+        });
+
+      const itemsByCategory: Record<string, typeof sortedCurrent> = {};
+      sortedCurrent.forEach((entry) => {
+        if (!itemsByCategory[entry.categoryName]) {
+          itemsByCategory[entry.categoryName] = [];
+        }
+        itemsByCategory[entry.categoryName].push(entry);
+      });
+
+      const reorderedCombined = categoryOrder.flatMap((categoryName) => {
+        const categoryItems = itemsByCategory[categoryName] || [];
+        const ranking = previousCategoryOrder[categoryName] || {};
+
+        const trackedItems = categoryItems
+          .filter((entry) => ranking[`${entry.type}:${entry.itemId}`] !== undefined)
+          .sort((a, b) => {
+            const aRank = ranking[`${a.type}:${a.itemId}`];
+            const bRank = ranking[`${b.type}:${b.itemId}`];
+            if (aRank !== bRank) return aRank - bRank;
+            return a.originalIndex - b.originalIndex;
+          });
+
+        const untrackedItems = categoryItems.filter(
+          (entry) => ranking[`${entry.type}:${entry.itemId}`] === undefined
+        );
+
+        return [...trackedItems, ...untrackedItems];
+      });
+
+      const reprioritizedItems = reorderedCombined.map((entry, index) => ({
+        ...entry,
+        newPriority: index + 1,
+      }));
+
+      const updatedPlannedTasks = reprioritizedItems
+        .filter((entry) => entry.type === 'task')
+        .map((entry) => ({
+          task: entry.item.task._id,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.newPriority,
+        }));
+
+      const updatedPlannedActivities = reprioritizedItems
+        .filter((entry) => entry.type === 'activity')
+        .map((entry) => ({
+          activity: entry.item.activity._id,
+          plannedStartTime: entry.item.plannedStartTime,
+          plannedDuration: entry.item.plannedDuration,
+          actualDuration: entry.item.actualDuration,
+          completed: entry.item.completed,
+          priority: entry.newPriority,
+        }));
+
+      return planningApi.updatePlanning(selectedDate.format('YYYY-MM-DD'), {
+        plannedTasks: updatedPlannedTasks as any,
+        plannedActivities: updatedPlannedActivities as any,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['dailyPlanning'] });
+      queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+    },
+  });
+
   const completeActivityMutation = useMutation({
     mutationFn: ({ activityId, completed, actualDuration }: { 
       activityId: string; 
@@ -114,6 +339,126 @@ export default function DailyPlanning() {
       queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
     },
   });
+
+  const trackedDurationByItem = useMemo(() => {
+    const taskDurations: Record<string, number> = {};
+    const activityDurations: Record<string, number> = {};
+    const nameCategoryDurations: Record<string, number> = {};
+
+    timeEntries.forEach((entry) => {
+      const duration = entry.isActive && entry.startTime
+        ? Math.max(0, currentTime.diff(dayjs(entry.startTime), 'minute'))
+        : (entry.duration || 0);
+
+      if (entry.task?._id) {
+        taskDurations[entry.task._id] = (taskDurations[entry.task._id] || 0) + duration;
+        const key = getNameCategoryKey(entry.task.title, entry.task.category?.name);
+        nameCategoryDurations[key] = (nameCategoryDurations[key] || 0) + duration;
+      }
+      if (entry.activity?._id) {
+        activityDurations[entry.activity._id] = (activityDurations[entry.activity._id] || 0) + duration;
+        const key = getNameCategoryKey(entry.activity.name, entry.activity.category?.name);
+        nameCategoryDurations[key] = (nameCategoryDurations[key] || 0) + duration;
+      }
+    });
+
+    return {
+      taskDurations,
+      activityDurations,
+      nameCategoryDurations,
+    };
+  }, [timeEntries, currentTime]);
+
+  const getTrackedTaskDuration = (task: any): number => {
+    const directMatch = trackedDurationByItem.taskDurations[task?._id] || 0;
+    if (directMatch > 0) return directMatch;
+
+    const fallbackKey = getNameCategoryKey(task?.title, task?.category?.name);
+    return trackedDurationByItem.nameCategoryDurations[fallbackKey] || 0;
+  };
+
+  const getTrackedActivityDuration = (activity: any): number => {
+    const directMatch = trackedDurationByItem.activityDurations[activity?._id] || 0;
+    if (directMatch > 0) return directMatch;
+
+    const fallbackKey = getNameCategoryKey(activity?.name, activity?.category?.name);
+    return trackedDurationByItem.nameCategoryDurations[fallbackKey] || 0;
+  };
+
+  useEffect(() => {
+    if (!planning) return;
+
+    const autoCompletePlannedItems = async () => {
+      const taskCandidates = (planning.plannedTasks || [])
+        .map((pt) => {
+          const targetDuration = pt.plannedDuration || pt.task.estimatedTime || 0;
+          const trackedDuration = Math.max(
+            getTrackedTaskDuration(pt.task),
+            pt.actualDuration || 0
+          );
+          return { plannedItem: pt, targetDuration, trackedDuration };
+        })
+        .filter(({ plannedItem, targetDuration, trackedDuration }) =>
+          !plannedItem.completed && targetDuration > 0 && trackedDuration >= targetDuration
+        );
+
+      const activityCandidates = (planning.plannedActivities || [])
+        .map((pa) => {
+          const targetDuration = pa.plannedDuration || pa.activity.estimatedDuration || 0;
+          const trackedDuration = Math.max(
+            getTrackedActivityDuration(pa.activity),
+            pa.actualDuration || 0
+          );
+          return { plannedItem: pa, targetDuration, trackedDuration };
+        })
+        .filter(({ plannedItem, targetDuration, trackedDuration }) =>
+          !plannedItem.completed && targetDuration > 0 && trackedDuration >= targetDuration
+        );
+
+      for (const { plannedItem, trackedDuration } of taskCandidates) {
+        const lockKey = `task:${plannedItem.task._id}`;
+        if (autoCompletingItemsRef.current.has(lockKey)) continue;
+
+        autoCompletingItemsRef.current.add(lockKey);
+        try {
+          await completeTaskMutation.mutateAsync({
+            taskId: plannedItem.task._id,
+            completed: true,
+            actualDuration: trackedDuration,
+          });
+        } catch (error) {
+          console.error('Auto-complete task failed:', error);
+        } finally {
+          autoCompletingItemsRef.current.delete(lockKey);
+        }
+      }
+
+      for (const { plannedItem, trackedDuration } of activityCandidates) {
+        const lockKey = `activity:${plannedItem.activity._id}`;
+        if (autoCompletingItemsRef.current.has(lockKey)) continue;
+
+        autoCompletingItemsRef.current.add(lockKey);
+        try {
+          await completeActivityMutation.mutateAsync({
+            activityId: plannedItem.activity._id,
+            completed: true,
+            actualDuration: trackedDuration,
+          });
+        } catch (error) {
+          console.error('Auto-complete activity failed:', error);
+        } finally {
+          autoCompletingItemsRef.current.delete(lockKey);
+        }
+      }
+    };
+
+    autoCompletePlannedItems();
+  }, [
+    planning,
+    trackedDurationByItem,
+    completeTaskMutation,
+    completeActivityMutation,
+  ]);
 
   const formatTime = (minutes: number): string => {
     const hours = Math.floor(minutes / 60);
@@ -549,6 +894,18 @@ export default function DailyPlanning() {
                 <Box sx={{ display: 'flex', gap: 1 }}>
                   <Button
                     size="small"
+                    startIcon={<ReorderIcon />}
+                    onClick={() => reorderPlanningMutation.mutate()}
+                    disabled={
+                      reorderPlanningMutation.isPending ||
+                      moveScheduledPriorityMutation.isPending ||
+                      !((planning?.plannedTasks?.length || 0) + (planning?.plannedActivities?.length || 0))
+                    }
+                  >
+                    {reorderPlanningMutation.isPending ? 'Re-ordering...' : 'Re-order'}
+                  </Button>
+                  <Button
+                    size="small"
                     startIcon={<ScheduleIcon />}
                     onClick={() => setSchedulerOpen(true)}
                   >
@@ -560,27 +917,25 @@ export default function DailyPlanning() {
               {(planning?.plannedTasks && planning.plannedTasks.length > 0) || (planning?.plannedActivities && planning.plannedActivities.length > 0) ? (
                 <Box>
                   {/* Combine and sort all planned items */}
-                  {[
-                    ...(planning.plannedTasks?.map(pt => ({ type: 'task' as const, item: pt })) || []),
-                    ...(planning.plannedActivities?.map(pa => ({ type: 'activity' as const, item: pa })) || [])
-                  ]
-                    .sort((a, b) => {
-                      const aTime = a.item.plannedStartTime;
-                      const bTime = b.item.plannedStartTime;
-                      const aPriority = a.item.priority;
-                      const bPriority = b.item.priority;
-                      
-                      if (!aTime && !bTime) return aPriority - bPriority;
-                      if (!aTime) return 1;
-                      if (!bTime) return -1;
-                      return new Date(aTime).getTime() - new Date(bTime).getTime();
-                    })
-                    .map((plannedItem, index) => {
+                  {scheduledItems.map((plannedItem, index) => {
                       const isTask = plannedItem.type === 'task';
                       const item = plannedItem.item;
                       const content = isTask ? (item as any).task : (item as any).activity;
                       const title = isTask ? content.title : content.name;
                       const estimatedTime = isTask ? content.estimatedTime : content.estimatedDuration;
+                      const targetDuration = item.plannedDuration || estimatedTime || 0;
+                      const trackedDuration = isTask
+                        ? getTrackedTaskDuration(content)
+                        : getTrackedActivityDuration(content);
+                      const currentActualDuration = Math.max(trackedDuration, item.actualDuration || 0);
+                      const progressPercent = targetDuration > 0
+                        ? Math.min(100, Math.round((currentActualDuration / targetDuration) * 100))
+                        : (item.completed ? 100 : 0);
+                      const progressLabel = item.completed || progressPercent >= 100
+                        ? 'Completed'
+                        : currentActualDuration > 0
+                          ? `In progress: ${formatTime(currentActualDuration)} / ${formatTime(targetDuration)}`
+                          : 'Not started';
                       
                       return (
                         <Card
@@ -606,9 +961,23 @@ export default function DailyPlanning() {
                                   >
                                     {title}
                                   </Typography>
-                                  {item.completed && (
-                                    <Chip label="✅ Done" size="small" color="success" />
-                                  )}
+                                  <Chip
+                                    label={
+                                      item.completed || progressPercent >= 100
+                                        ? '✅ Done'
+                                        : currentActualDuration > 0
+                                          ? `⏳ ${progressPercent}%`
+                                          : '⬜ Not started'
+                                    }
+                                    size="small"
+                                    color={
+                                      item.completed || progressPercent >= 100
+                                        ? 'success'
+                                        : currentActualDuration > 0
+                                          ? 'warning'
+                                          : 'default'
+                                    }
+                                  />
                                 </Box>
 
                                 <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
@@ -662,17 +1031,65 @@ export default function DailyPlanning() {
                                     </Typography>
                                   )}
                                   <Typography variant="body2" color="text.secondary">
-                                    ⏱️ {formatTime(item.plannedDuration || estimatedTime)}
+                                    ⏱️ {formatTime(targetDuration)}
                                   </Typography>
-                                  {item.actualDuration && (
+                                  {currentActualDuration > 0 && (
                                     <Typography variant="body2" color="primary">
-                                      ✓ {formatTime(item.actualDuration)} actual
+                                      ✓ {formatTime(currentActualDuration)} tracked
                                     </Typography>
                                   )}
+                                </Box>
+
+                                <Box sx={{ mt: 1.25 }}>
+                                  <LinearProgress
+                                    variant="determinate"
+                                    value={progressPercent}
+                                    sx={{ height: 6, borderRadius: 3 }}
+                                    color={
+                                      item.completed || progressPercent >= 100
+                                        ? 'success'
+                                        : currentActualDuration > 0
+                                          ? 'primary'
+                                          : 'inherit'
+                                    }
+                                  />
+                                  <Typography variant="caption" color="text.secondary">
+                                    {progressLabel}
+                                  </Typography>
                                 </Box>
                               </Box>
 
                               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                                <Tooltip title="Move up">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleMoveScheduledItem(index, 'up')}
+                                      disabled={
+                                        index === 0 ||
+                                        moveScheduledPriorityMutation.isPending ||
+                                        reorderPlanningMutation.isPending
+                                      }
+                                    >
+                                      <MoveUpIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
+                                <Tooltip title="Move down">
+                                  <span>
+                                    <IconButton
+                                      size="small"
+                                      onClick={() => handleMoveScheduledItem(index, 'down')}
+                                      disabled={
+                                        index === scheduledItems.length - 1 ||
+                                        moveScheduledPriorityMutation.isPending ||
+                                        reorderPlanningMutation.isPending
+                                      }
+                                    >
+                                      <MoveDownIcon fontSize="small" />
+                                    </IconButton>
+                                  </span>
+                                </Tooltip>
                                 <Tooltip title={item.completed ? "Mark as incomplete" : "Mark as complete"}>
                                   <IconButton
                                     size="small"
@@ -682,17 +1099,22 @@ export default function DailyPlanning() {
                                         completeTaskMutation.mutate({
                                           taskId: content._id,
                                           completed: !item.completed,
-                                          actualDuration: item.actualDuration,
+                                          actualDuration: currentActualDuration,
                                         });
                                       } else {
                                         completeActivityMutation.mutate({
                                           activityId: content._id,
                                           completed: !item.completed,
-                                          actualDuration: item.actualDuration,
+                                          actualDuration: currentActualDuration,
                                         });
                                       }
                                     }}
-                                    disabled={completeTaskMutation.isPending || completeActivityMutation.isPending}
+                                    disabled={
+                                      completeTaskMutation.isPending ||
+                                      completeActivityMutation.isPending ||
+                                      moveScheduledPriorityMutation.isPending ||
+                                      reorderPlanningMutation.isPending
+                                    }
                                   >
                                     <CompleteIcon />
                                   </IconButton>

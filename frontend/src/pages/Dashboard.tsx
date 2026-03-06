@@ -139,22 +139,31 @@ export default function Dashboard() {
                   Currently Working On
                 </Typography>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                  {(() => {
+                    const activeColor = activeEntry.activity?.color || activeEntry.task?.category?.color || '#2196f3';
+                    const activeName = activeEntry.activity?.name || activeEntry.task?.title || 'Unknown';
+                    const activeQuadrant = activeEntry.activity?.quadrant || activeEntry.task?.quadrant || 1;
+                    return (
+                      <>
                   <Box
                     sx={{
                       width: 16,
                       height: 16,
                       borderRadius: '50%',
-                      backgroundColor: activeEntry.activity.color,
+                            backgroundColor: activeColor,
                     }}
                   />
                   <Typography variant="body1">
-                    {activeEntry.activity.name}
+                          {activeName}
                   </Typography>
                   <Chip
-                    label={QuadrantLabels[activeEntry.activity.quadrant]}
+                          label={QuadrantLabels[activeQuadrant as keyof typeof QuadrantLabels]}
                     size="small"
-                    sx={{ backgroundColor: QuadrantColors[activeEntry.activity.quadrant], color: 'white' }}
+                          sx={{ backgroundColor: QuadrantColors[activeQuadrant as keyof typeof QuadrantColors], color: 'white' }}
                   />
+                      </>
+                    );
+                  })()}
                   <Typography variant="body2" sx={{ ml: 'auto' }}>
                     Started: {dayjs(activeEntry.startTime).format('HH:mm')}
                   </Typography>
@@ -205,6 +214,7 @@ export default function Dashboard() {
                             </Typography>
                           </Box>
                         }
+                        secondaryTypographyProps={{ component: 'div' }}
                         sx={{
                           textDecoration: task.status === 'Completed' ? 'line-through' : 'none',
                         }}
@@ -256,6 +266,7 @@ export default function Dashboard() {
                             />
                           </Box>
                         }
+                        secondaryTypographyProps={{ component: 'div' }}
                       />
                     </ListItem>
                   ))}
