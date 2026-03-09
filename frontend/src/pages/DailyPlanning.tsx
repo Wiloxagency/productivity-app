@@ -14,6 +14,7 @@ import {
   Divider,
   IconButton,
   Tooltip,
+  TextField,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -42,11 +43,19 @@ export default function DailyPlanning() {
   const [timeBlockerOpen, setTimeBlockerOpen] = useState(false);
   const [goalsOpen, setGoalsOpen] = useState(false);
   const [currentTime, setCurrentTime] = useState(dayjs());
+  const [editingPriorityItemKey, setEditingPriorityItemKey] = useState<string | null>(null);
+  const [priorityInputValue, setPriorityInputValue] = useState('');
 
   const queryClient = useQueryClient();
   const autoCompletingItemsRef = useRef<Set<string>>(new Set());
   const getNameCategoryKey = (name?: string, categoryName?: string) =>
     `${(name || '').trim().toLowerCase()}::${(categoryName || '').trim().toLowerCase()}`;
+  const getScheduledItemKey = (plannedItem: { type: 'task' | 'activity'; item: any }) => {
+    const rawId = plannedItem.type === 'task'
+      ? plannedItem.item.task?._id || plannedItem.item.task
+      : plannedItem.item.activity?._id || plannedItem.item.activity;
+    return `${plannedItem.type}-${rawId}`;
+  };
 
   const { data: planning, isLoading } = useQuery({
     queryKey: ['dailyPlanning', selectedDate.format('YYYY-MM-DD')],
@@ -173,6 +182,42 @@ export default function DailyPlanning() {
 
     const reordered = [...scheduledItems];
     [reordered[currentIndex], reordered[targetIndex]] = [reordered[targetIndex], reordered[currentIndex]];
+    moveScheduledPriorityMutation.mutate(reordered);
+  };
+
+  const startPriorityEdit = (itemKey: string, currentPriority: number) => {
+    if (moveScheduledPriorityMutation.isPending || reorderPlanningMutation.isPending) return;
+    setEditingPriorityItemKey(itemKey);
+    setPriorityInputValue(String(currentPriority));
+  };
+
+  const cancelPriorityEdit = () => {
+    setEditingPriorityItemKey(null);
+    setPriorityInputValue('');
+  };
+
+  const submitPriorityEdit = (itemKey: string) => {
+    if (editingPriorityItemKey !== itemKey) return;
+
+    const parsedPriority = Number.parseInt(priorityInputValue, 10);
+    const currentIndex = scheduledItems.findIndex((entry) => getScheduledItemKey(entry) === itemKey);
+
+    if (!Number.isFinite(parsedPriority) || currentIndex === -1) {
+      cancelPriorityEdit();
+      return;
+    }
+
+    const targetIndex = Math.min(Math.max(parsedPriority, 1), scheduledItems.length) - 1;
+    if (targetIndex === currentIndex) {
+      cancelPriorityEdit();
+      return;
+    }
+
+    const reordered = [...scheduledItems];
+    const [selectedItem] = reordered.splice(currentIndex, 1);
+    reordered.splice(targetIndex, 0, selectedItem);
+
+    cancelPriorityEdit();
     moveScheduledPriorityMutation.mutate(reordered);
   };
 
@@ -921,6 +966,7 @@ export default function DailyPlanning() {
                       const isTask = plannedItem.type === 'task';
                       const item = plannedItem.item;
                       const content = isTask ? (item as any).task : (item as any).activity;
+                      const scheduledItemKey = getScheduledItemKey(plannedItem);
                       const title = isTask ? content.title : content.name;
                       const estimatedTime = isTask ? content.estimatedTime : content.estimatedDuration;
                       const targetDuration = item.plannedDuration || estimatedTime || 0;
@@ -939,7 +985,7 @@ export default function DailyPlanning() {
                       
                       return (
                         <Card
-                          key={`${plannedItem.type}-${content._id}`}
+                          key={scheduledItemKey}
                           variant="outlined"
                           sx={{
                             mb: 2,
@@ -981,16 +1027,62 @@ export default function DailyPlanning() {
                                 </Box>
 
                                 <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
-                                  <Chip
-                                    label={`#${item.priority}`}
-                                    size="small"
-                                    sx={{
-                                      backgroundColor: 'primary.main',
-                                      color: 'white',
-                                      fontSize: '0.7rem',
-                                      height: '20px',
-                                    }}
-                                  />
+                                  {editingPriorityItemKey === scheduledItemKey ? (
+                                    <TextField
+                                      size="small"
+                                      type="number"
+                                      value={priorityInputValue}
+                                      onChange={(event) => setPriorityInputValue(event.target.value)}
+                                      onBlur={() => submitPriorityEdit(scheduledItemKey)}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                          event.preventDefault();
+                                          submitPriorityEdit(scheduledItemKey);
+                                        }
+                                        if (event.key === 'Escape') {
+                                          event.preventDefault();
+                                          cancelPriorityEdit();
+                                        }
+                                      }}
+                                      autoFocus
+                                      inputProps={{
+                                        min: 1,
+                                        max: scheduledItems.length,
+                                        style: {
+                                          padding: '2px 4px',
+                                          textAlign: 'center',
+                                          fontSize: '0.75rem',
+                                          color: 'white',
+                                        },
+                                      }}
+                                      sx={{
+                                        width: 56,
+                                        '& .MuiOutlinedInput-root': {
+                                          height: 22,
+                                          backgroundColor: 'primary.main',
+                                          color: 'white',
+                                          '& fieldset': { borderColor: 'primary.main' },
+                                          '&:hover fieldset': { borderColor: 'primary.main' },
+                                          '&.Mui-focused fieldset': { borderColor: 'primary.dark' },
+                                        },
+                                      }}
+                                    />
+                                  ) : (
+                                    <Tooltip title="Click to edit priority">
+                                      <Chip
+                                        label={`#${item.priority}`}
+                                        size="small"
+                                        onClick={() => startPriorityEdit(scheduledItemKey, item.priority || index + 1)}
+                                        sx={{
+                                          backgroundColor: 'primary.main',
+                                          color: 'white',
+                                          fontSize: '0.7rem',
+                                          height: '20px',
+                                          cursor: 'pointer',
+                                        }}
+                                      />
+                                    </Tooltip>
+                                  )}
                                   <Chip
                                     label={`Q${content.quadrant}`}
                                     size="small"

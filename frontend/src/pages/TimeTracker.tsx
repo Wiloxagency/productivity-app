@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box,
   Typography,
@@ -93,6 +93,12 @@ export default function TimeTracker() {
     startTime: '',
     endTime: '',
   });
+  const [lastManualSelection, setLastManualSelection] = useState<{
+    item: string;
+    type: 'activity' | 'task';
+  } | null>(null);
+  const manualStartTimeInputRef = useRef<HTMLInputElement | null>(null);
+  const manualEndTimeInputRef = useRef<HTMLInputElement | null>(null);
   const [hiddenNextItemsByDate, setHiddenNextItemsByDate] = useState<Record<string, string[]>>(() => {
     if (typeof window === 'undefined') return {};
     try {
@@ -106,6 +112,26 @@ export default function TimeTracker() {
   });
 
   const queryClient = useQueryClient();
+  const buildLocalDateTime = (dateValue: string, timeValue: string): Date | null => {
+    const dateParts = dateValue.split('-').map(Number);
+    const timeParts = timeValue.split(':').map(Number);
+
+    if (
+      dateParts.length !== 3 ||
+      timeParts.length < 2 ||
+      dateParts.some((part) => Number.isNaN(part)) ||
+      timeParts.some((part) => Number.isNaN(part))
+    ) {
+      return null;
+    }
+
+    const [year, month, day] = dateParts;
+    const [hours, minutes] = timeParts;
+    const built = new Date(year, month - 1, day, hours, minutes, 0, 0);
+
+    if (Number.isNaN(built.getTime())) return null;
+    return built;
+  };
 
   const { data: activities = [] } = useQuery({
     queryKey: ['activities'],
@@ -151,7 +177,25 @@ export default function TimeTracker() {
   const startFromEntryMutation = useMutation({
     mutationFn: async (entry: any) => {
       const localDate = selectedDate.format('YYYY-MM-DD');
-      const isPomodoro = activeEntry?.isPomodoro || false;
+      const taskId = entry.task?._id;
+      const activityId = entry.activity?._id;
+      const matchedTask = taskId ? backlogTasks.find((task) => task._id === taskId) : null;
+      const matchedActivity = activityId ? activities.find((activity) => activity._id === activityId) : null;
+
+      const categoryName =
+        entry.task?.category?.name ||
+        matchedTask?.category?.name ||
+        entry.activity?.category?.name ||
+        matchedActivity?.category?.name ||
+        '';
+      const activityName = (entry.activity?.name || matchedActivity?.name || '').trim().toLowerCase();
+
+      const isBreak = activityName === 'break time';
+      const isWorkCategory = categoryName.trim().toLowerCase() === 'work';
+      const isTaskEntry = !!entry.task?._id;
+      const isPomodoro = isTaskEntry
+        ? true
+        : (isBreak || isWorkCategory || entry.isPomodoro === true || activeEntry?.isPomodoro === true);
 
       if (activeEntry?.isActive && activeEntry._id !== entry._id) {
         await timeEntriesApi.stop(activeEntry._id, {
@@ -206,17 +250,24 @@ export default function TimeTracker() {
 
   const createManualEntryMutation = useMutation({
     mutationFn: async (data: any) => {
-      // We'll need to create a custom endpoint for manual entries
-      // For now, let's create it similar to start but with specific times
-      const startDateTime = new Date(`${selectedDate.format('YYYY-MM-DD')}T${data.startTime}`);
-      const endDateTime = new Date(`${selectedDate.format('YYYY-MM-DD')}T${data.endTime}`);
+      const selectedDateKey = selectedDate.format('YYYY-MM-DD');
+      const startDateTime = buildLocalDateTime(selectedDateKey, data.startTime);
+      const endDateTime = buildLocalDateTime(selectedDateKey, data.endTime);
+      const dayStart = buildLocalDateTime(selectedDateKey, '00:00');
+
+      if (!startDateTime || !endDateTime || !dayStart) {
+        throw new Error('Invalid date or time. Please verify start/end time.');
+      }
+      if (endDateTime.getTime() <= startDateTime.getTime()) {
+        throw new Error('End time must be after start time.');
+      }
       
       const entryData: any = {
         startTime: startDateTime,
         endTime: endDateTime,
         notes: data.notes,
         isActive: false, // Manual entries are already completed
-        date: new Date(selectedDate.format('YYYY-MM-DD')), // Use start of day for date field
+        date: dayStart, // Use local start of day for date field
       };
       
       if (data.type === 'activity') {
@@ -226,9 +277,7 @@ export default function TimeTracker() {
       }
       
       // Calculate duration in minutes
-      const start = new Date(`${selectedDate.format('YYYY-MM-DD')}T${data.startTime}`);
-      const end = new Date(`${selectedDate.format('YYYY-MM-DD')}T${data.endTime}`);
-      entryData.duration = Math.round((end.getTime() - start.getTime()) / (1000 * 60));
+      entryData.duration = Math.round((endDateTime.getTime() - startDateTime.getTime()) / (1000 * 60));
       
       return timeEntriesApi.createManual(entryData);
     },
@@ -237,13 +286,16 @@ export default function TimeTracker() {
       queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
       queryClient.invalidateQueries({ queryKey: ['dailySummary'] });
       setDialogOpen(false);
-      setManualEntry({
-        item: '',
-        type: 'activity',
+      setManualEntry((previous) => ({
+        ...previous,
         startTime: '',
         endTime: '',
         notes: '',
-      });
+      }));
+    },
+    onError: (error: any) => {
+      const serverMessage = error?.response?.data?.error;
+      alert(serverMessage || error?.message || 'Could not add manual entry. Please try again.');
     },
   });
 
@@ -319,6 +371,18 @@ export default function TimeTracker() {
       // ignore storage errors
     }
   }, [hiddenNextItemsByDate]);
+
+  useEffect(() => {
+    if (!dialogOpen) return;
+    if (manualEntry.item) return;
+    if (!lastManualSelection?.item) return;
+
+    setManualEntry((previous) => ({
+      ...previous,
+      item: lastManualSelection.item,
+      type: lastManualSelection.type,
+    }));
+  }, [dialogOpen, manualEntry.item, lastManualSelection]);
 
   const nextThreeItems: PlannedItemPreview[] = dailyPlanning
     ? [
@@ -506,11 +570,51 @@ export default function TimeTracker() {
   };
 
   const handleManualEntrySubmit = () => {
-    if (!manualEntry.item || !manualEntry.startTime || !manualEntry.endTime) {
+    const resolvedStartTime = manualEntry.startTime || manualStartTimeInputRef.current?.value || '';
+    const resolvedEndTime = manualEntry.endTime || manualEndTimeInputRef.current?.value || '';
+    const payload = manualEntry.item
+      ? { ...manualEntry, startTime: resolvedStartTime, endTime: resolvedEndTime }
+      : lastManualSelection
+        ? {
+            ...manualEntry,
+            item: lastManualSelection.item,
+            type: lastManualSelection.type,
+            startTime: resolvedStartTime,
+            endTime: resolvedEndTime,
+          }
+        : { ...manualEntry, startTime: resolvedStartTime, endTime: resolvedEndTime };
+
+    if (resolvedStartTime !== manualEntry.startTime || resolvedEndTime !== manualEntry.endTime) {
+      setManualEntry((previous) => ({
+        ...previous,
+        startTime: resolvedStartTime,
+        endTime: resolvedEndTime,
+      }));
+    }
+
+    const missingFields: string[] = [];
+    if (!payload.item) missingFields.push('activity/task');
+    if (!payload.startTime) missingFields.push('start time');
+    if (!payload.endTime) missingFields.push('end time');
+
+    if (missingFields.length > 0) {
+      alert(`Please fill: ${missingFields.join(', ')}.`);
+      return;
+    }
+
+    const selectedDateKey = selectedDate.format('YYYY-MM-DD');
+    const startDateTime = buildLocalDateTime(selectedDateKey, payload.startTime);
+    const endDateTime = buildLocalDateTime(selectedDateKey, payload.endTime);
+    if (!startDateTime || !endDateTime) {
+      alert('Invalid start/end time.');
+      return;
+    }
+    if (endDateTime.getTime() <= startDateTime.getTime()) {
+      alert('End time must be after start time');
       return;
     }
     
-    createManualEntryMutation.mutate(manualEntry);
+    createManualEntryMutation.mutate(payload);
   };
 
   const handleEditEntrySubmit = () => {
@@ -946,7 +1050,8 @@ export default function TimeTracker() {
                   label="Activity or Task"
                   onChange={(e) => {
                     const [type, id] = e.target.value.split(':') as ['activity' | 'task', string];
-                    setManualEntry({ ...manualEntry, item: id, type });
+                    setManualEntry((previous) => ({ ...previous, item: id, type }));
+                    setLastManualSelection({ item: id, type });
                   }}
                 >
                   {/* Activities Section */}
@@ -998,7 +1103,12 @@ export default function TimeTracker() {
                 label="Start Time"
                 type="time"
                 value={manualEntry.startTime}
-                onChange={(e) => setManualEntry({ ...manualEntry, startTime: e.target.value })}
+                inputRef={manualStartTimeInputRef}
+                onInput={(e) => {
+                  const value = (e.target as HTMLInputElement).value;
+                  setManualEntry((previous) => ({ ...previous, startTime: value }));
+                }}
+                onChange={(e) => setManualEntry((previous) => ({ ...previous, startTime: e.target.value }))}
                 InputLabelProps={{ shrink: true }}
               />
             </Grid>
@@ -1009,7 +1119,12 @@ export default function TimeTracker() {
                 label="End Time"
                 type="time"
                 value={manualEntry.endTime}
-                onChange={(e) => setManualEntry({ ...manualEntry, endTime: e.target.value })}
+                inputRef={manualEndTimeInputRef}
+                onInput={(e) => {
+                  const value = (e.target as HTMLInputElement).value;
+                  setManualEntry((previous) => ({ ...previous, endTime: value }));
+                }}
+                onChange={(e) => setManualEntry((previous) => ({ ...previous, endTime: e.target.value }))}
                 InputLabelProps={{ shrink: true }}
               />
             </Grid>
@@ -1021,7 +1136,7 @@ export default function TimeTracker() {
                 multiline
                 rows={2}
                 value={manualEntry.notes}
-                onChange={(e) => setManualEntry({ ...manualEntry, notes: e.target.value })}
+                onChange={(e) => setManualEntry((previous) => ({ ...previous, notes: e.target.value }))}
               />
             </Grid>
           </Grid>
