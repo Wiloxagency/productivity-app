@@ -345,6 +345,32 @@ export default function TaskManager() {
     }
   };
 
+  const handlePrioritySet = async (taskId: string, targetPriority: number) => {
+    try {
+      const currentIndex = backlogTasks.findIndex(t => t._id === taskId);
+      if (currentIndex === -1) return;
+
+      const targetIndex = Math.min(Math.max(targetPriority, 1), backlogTasks.length) - 1;
+      if (targetIndex === currentIndex) return;
+
+      const reorderedTasks = [...backlogTasks];
+      const [movedTask] = reorderedTasks.splice(currentIndex, 1);
+      reorderedTasks.splice(targetIndex, 0, movedTask);
+
+      const taskIds = reorderedTasks.map(t => t._id);
+      await tasksApi.reorder(taskIds);
+
+      queryClient.invalidateQueries({ queryKey: ['backlogTasks'] });
+
+      setSnackbarMessage(`📌 Task moved to priority #${targetIndex + 1}`);
+      setSnackbarOpen(true);
+    } catch (error) {
+      console.error('Error setting task priority:', error);
+      setSnackbarMessage('❌ Failed to update task priority');
+      setSnackbarOpen(true);
+    }
+  };
+
   const formatTime = (minutes: number): string => {
     const hours = Math.floor(minutes / 60);
     const mins = minutes % 60;
@@ -486,12 +512,14 @@ export default function TaskManager() {
                   key={task._id} 
                   task={task} 
                   priority={index + 1}
+                  maxPriority={backlogTasks.length}
                   onEdit={handleOpenDialog}
                   onDelete={(id) => { setTaskIdToDelete(id); setDeleteConfirmOpen(true); }}
                   onPlan={handlePlanTask}
                   onStartTracking={handleStartTracking}
                   onStatusChange={handleStatusChange}
                   onPriorityChange={handlePriorityChange}
+                  onPrioritySet={handlePrioritySet}
                 />
               ))}
             </Grid>

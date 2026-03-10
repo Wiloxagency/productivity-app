@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Card,
   CardContent,
@@ -8,6 +8,7 @@ import {
   IconButton,
   Stack,
   Tooltip,
+  TextField,
 } from '@mui/material';
 import {
   Edit as EditIcon,
@@ -33,6 +34,8 @@ interface TaskCardProps {
   onStartTracking: (task: Task) => void;
   onStatusChange?: (taskId: string, status: Task['status']) => void;
   onPriorityChange?: (taskId: string, direction: 'up' | 'down') => void;
+  onPrioritySet?: (taskId: string, targetPriority: number) => void;
+  maxPriority?: number;
 }
 
 export default function TaskCard({
@@ -45,11 +48,53 @@ export default function TaskCard({
   onStartTracking,
   onStatusChange,
   onPriorityChange,
+  onPrioritySet,
+  maxPriority,
 }: TaskCardProps) {
+  const [isPriorityEditing, setIsPriorityEditing] = useState(false);
+  const [priorityInputValue, setPriorityInputValue] = useState('');
   const formatTime = (minutes: number): string => {
     const hours = Math.floor(minutes / 60);
     const mins = minutes % 60;
     return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  };
+
+  const canEditPriority =
+    !compact &&
+    typeof priority === 'number' &&
+    typeof onPrioritySet === 'function' &&
+    typeof maxPriority === 'number' &&
+    maxPriority > 0;
+
+  const startPriorityEdit = () => {
+    if (!canEditPriority || typeof priority !== 'number') return;
+    setPriorityInputValue(String(priority));
+    setIsPriorityEditing(true);
+  };
+
+  const cancelPriorityEdit = () => {
+    setIsPriorityEditing(false);
+    setPriorityInputValue('');
+  };
+
+  const submitPriorityEdit = () => {
+    if (!canEditPriority || typeof priority !== 'number' || typeof onPrioritySet !== 'function' || typeof maxPriority !== 'number') {
+      cancelPriorityEdit();
+      return;
+    }
+
+    const parsedPriority = Number.parseInt(priorityInputValue, 10);
+    if (!Number.isFinite(parsedPriority)) {
+      cancelPriorityEdit();
+      return;
+    }
+
+    const boundedPriority = Math.min(Math.max(parsedPriority, 1), maxPriority);
+    if (boundedPriority !== priority) {
+      onPrioritySet(task._id, boundedPriority);
+    }
+
+    cancelPriorityEdit();
   };
 
   const getStatusColor = (status: Task['status']) => {
@@ -78,29 +123,12 @@ export default function TaskCard({
         mb: compact ? 1 : 2,
         border: `2px solid ${QuadrantColors[task.quadrant]}`,
         '&:hover': { boxShadow: 4 },
-        position: 'relative',
         transition: 'all 0.2s ease-in-out',
       }}
     >
       <CardContent sx={{ pb: compact ? 1 : 2 }}>
-        {priority && !compact && (
-          <Chip
-            label={`#${priority}`}
-            size="small"
-            sx={{
-              position: 'absolute',
-              top: 8,
-              right: 8,
-              backgroundColor: 'primary.main',
-              color: 'white',
-              fontSize: '0.7rem',
-              fontWeight: 'bold',
-            }}
-          />
-        )}
-        
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <Box sx={{ flex: 1, pr: priority && !compact ? 5 : 0 }}>
+          <Box sx={{ flex: 1 }}>
             <Typography 
               variant={compact ? "subtitle1" : "h6"} 
               gutterBottom
@@ -129,18 +157,64 @@ export default function TaskCard({
             )}
             
             <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
-              {!compact && (
-                <Chip
-                  label={`#${task.priority}`}
-                  size="small"
-                  sx={{
-                    backgroundColor: 'primary.main',
-                    color: 'white',
-                    fontSize: '0.7rem',
-                    fontWeight: 'bold',
-                    height: '20px',
-                  }}
-                />
+              {!compact && typeof priority === 'number' && (
+                isPriorityEditing ? (
+                  <TextField
+                    size="small"
+                    type="number"
+                    value={priorityInputValue}
+                    onChange={(event) => setPriorityInputValue(event.target.value)}
+                    onBlur={submitPriorityEdit}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        submitPriorityEdit();
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault();
+                        cancelPriorityEdit();
+                      }
+                    }}
+                    autoFocus
+                    inputProps={{
+                      min: 1,
+                      max: maxPriority,
+                      style: {
+                        padding: '2px 4px',
+                        textAlign: 'center',
+                        fontSize: '0.75rem',
+                        color: 'white',
+                      },
+                    }}
+                    sx={{
+                      width: 56,
+                      '& .MuiOutlinedInput-root': {
+                        height: 22,
+                        backgroundColor: 'primary.main',
+                        color: 'white',
+                        '& fieldset': { borderColor: 'primary.main' },
+                        '&:hover fieldset': { borderColor: 'primary.main' },
+                        '&.Mui-focused fieldset': { borderColor: 'primary.dark' },
+                      },
+                    }}
+                  />
+                ) : (
+                  <Tooltip title={canEditPriority ? 'Click to edit priority' : 'Priority'}>
+                    <Chip
+                      label={`#${priority}`}
+                      size="small"
+                      onClick={canEditPriority ? startPriorityEdit : undefined}
+                      sx={{
+                        backgroundColor: 'primary.main',
+                        color: 'white',
+                        fontSize: '0.7rem',
+                        fontWeight: 'bold',
+                        height: '20px',
+                        cursor: canEditPriority ? 'pointer' : 'default',
+                      }}
+                    />
+                  </Tooltip>
+                )
               )}
               <Chip
                 label={`${getStatusIcon(task.status)} ${task.status}`}
