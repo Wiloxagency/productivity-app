@@ -263,72 +263,72 @@ export default function DailyPlanning() {
 
         return a.originalIndex - b.originalIndex;
       });
+      const getTrackingKey = (entry: { type: 'task' | 'activity'; itemId: string }) =>
+        `${entry.type}:${entry.itemId}`;
 
-      const categoryOrder: string[] = [];
-      sortedCurrent.forEach((entry) => {
-        if (!categoryOrder.includes(entry.categoryName)) {
-          categoryOrder.push(entry.categoryName);
-        }
+      const currentOrderIndexByKey: Record<string, number> = {};
+      sortedCurrent.forEach((entry, index) => {
+        currentOrderIndexByKey[getTrackingKey(entry)] = index;
       });
 
-      const previousCategoryOrder: Record<string, Record<string, number>> = {};
-      const previousCategoryCounter: Record<string, number> = {};
-
+      const previousDayOrderByKey: Record<string, number> = {};
+      let previousDayOrderCounter = 0;
       previousDayEntries
         .filter((entry) => entry.task?._id || entry.activity?._id)
-        .sort(
-          (a, b) =>
-            new Date(a.startTime).getTime() -
-            new Date(b.startTime).getTime()
-        )
+        .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
         .forEach((entry) => {
           const isTaskEntry = !!entry.task?._id;
           const entryType = isTaskEntry ? 'task' : 'activity';
           const entryId = isTaskEntry ? entry.task!._id : entry.activity!._id;
-          const categoryName =
-            entry.task?.category?.name ||
-            entry.activity?.category?.name ||
-            'Uncategorized';
-          const trackingKey = `${entryType}:${entryId}`;
-
-          if (!previousCategoryOrder[categoryName]) {
-            previousCategoryOrder[categoryName] = {};
-            previousCategoryCounter[categoryName] = 0;
-          }
-
-          if (previousCategoryOrder[categoryName][trackingKey] === undefined) {
-            previousCategoryOrder[categoryName][trackingKey] =
-              previousCategoryCounter[categoryName];
-            previousCategoryCounter[categoryName] += 1;
+          const key = `${entryType}:${entryId}`;
+          if (previousDayOrderByKey[key] === undefined) {
+            previousDayOrderByKey[key] = previousDayOrderCounter;
+            previousDayOrderCounter += 1;
           }
         });
 
-      const itemsByCategory: Record<string, typeof sortedCurrent> = {};
-      sortedCurrent.forEach((entry) => {
-        if (!itemsByCategory[entry.categoryName]) {
-          itemsByCategory[entry.categoryName] = [];
-        }
-        itemsByCategory[entry.categoryName].push(entry);
+      const backlogOrderByTaskId: Record<string, number> = {};
+      backlogTasks.forEach((task, index) => {
+        backlogOrderByTaskId[task._id] = index;
       });
 
-      const reorderedCombined = categoryOrder.flatMap((categoryName) => {
-        const categoryItems = itemsByCategory[categoryName] || [];
-        const ranking = previousCategoryOrder[categoryName] || {};
+      const reorderedCombined = [...sortedCurrent].sort((a, b) => {
+        const aKey = getTrackingKey(a);
+        const bKey = getTrackingKey(b);
 
-        const trackedItems = categoryItems
-          .filter((entry) => ranking[`${entry.type}:${entry.itemId}`] !== undefined)
-          .sort((a, b) => {
-            const aRank = ranking[`${a.type}:${a.itemId}`];
-            const bRank = ranking[`${b.type}:${b.itemId}`];
-            if (aRank !== bRank) return aRank - bRank;
-            return a.originalIndex - b.originalIndex;
-          });
+        const aPreviousOrder = previousDayOrderByKey[aKey];
+        const bPreviousOrder = previousDayOrderByKey[bKey];
+        const aHasPreviousOrder = aPreviousOrder !== undefined;
+        const bHasPreviousOrder = bPreviousOrder !== undefined;
 
-        const untrackedItems = categoryItems.filter(
-          (entry) => ranking[`${entry.type}:${entry.itemId}`] === undefined
+        // Always prioritize and preserve the actual interleaved sequence from yesterday.
+        if (aHasPreviousOrder && bHasPreviousOrder && aPreviousOrder !== bPreviousOrder) {
+          return aPreviousOrder - bPreviousOrder;
+        }
+        if (aHasPreviousOrder !== bHasPreviousOrder) {
+          return aHasPreviousOrder ? -1 : 1;
+        }
+
+        // For tasks not executed yesterday, use current Task Backlog order.
+        if (!aHasPreviousOrder && !bHasPreviousOrder && a.type === 'task' && b.type === 'task') {
+          const aBacklogOrder = backlogOrderByTaskId[a.itemId];
+          const bBacklogOrder = backlogOrderByTaskId[b.itemId];
+          const aHasBacklogOrder = aBacklogOrder !== undefined;
+          const bHasBacklogOrder = bBacklogOrder !== undefined;
+
+          if (aHasBacklogOrder && bHasBacklogOrder && aBacklogOrder !== bBacklogOrder) {
+            return aBacklogOrder - bBacklogOrder;
+          }
+          if (aHasBacklogOrder !== bHasBacklogOrder) {
+            return aHasBacklogOrder ? -1 : 1;
+          }
+        }
+
+        // Stable fallback: keep current planning order.
+        return (
+          currentOrderIndexByKey[aKey] -
+          currentOrderIndexByKey[bKey]
         );
-
-        return [...trackedItems, ...untrackedItems];
       });
 
       const reprioritizedItems = reorderedCombined.map((entry, index) => ({

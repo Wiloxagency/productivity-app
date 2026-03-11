@@ -384,6 +384,17 @@ export default function TimeTracker() {
     }));
   }, [dialogOpen, manualEntry.item, lastManualSelection]);
 
+  const trackedTaskIds = new Set(
+    timeEntries
+      .map((entry) => entry.task?._id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  );
+  const trackedActivityIds = new Set(
+    timeEntries
+      .map((entry) => entry.activity?._id)
+      .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  );
+
   const nextThreeItems: PlannedItemPreview[] = dailyPlanning
     ? [
         ...(dailyPlanning.plannedTasks || []).map((pt) => ({
@@ -414,8 +425,10 @@ export default function TimeTracker() {
           if (shouldHideFromNextThree(item)) return false;
           if (isHiddenFromNextThree(item)) return false;
           if (item.type === 'task') {
+            if (trackedTaskIds.has(item.id)) return false;
             return item.id !== activeEntry?.task?._id;
           }
+          if (trackedActivityIds.has(item.id)) return false;
           return item.id !== activeEntry?.activity?._id;
         })
         .sort((a, b) => {
