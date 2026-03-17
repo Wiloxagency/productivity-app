@@ -114,6 +114,7 @@ export default function TaskManager() {
     queryKey: ['activeTimeEntry'],
     queryFn: timeEntriesApi.getActive,
     refetchInterval: 5000,
+    refetchIntervalInBackground: true,
   });
 
   const { data: projects = [] } = useQuery({
@@ -246,18 +247,14 @@ export default function TaskManager() {
       if (activeEntry) {
         // Stop the current time entry (this preserves the original entry in the list)
         await timeEntriesApi.stop(activeEntry._id, {
-          notes: activeEntry.isPomodoro 
-            ? `Switched during Pomodoro session to task: ${task.title}`
-            : `Switched to tracking task: ${task.title}`
+          notes: `Switched to tracking task: ${task.title}`
         });
         
-        // Start new time tracking for this task, preserving Pomodoro state if applicable
+        // Start new time tracking for this task as regular tracking (non-pomodoro)
         await timeEntriesApi.startWithTask({
           task: task._id,
-          isPomodoro: activeEntry.isPomodoro, // Preserve Pomodoro state
-          notes: activeEntry.isPomodoro 
-            ? `Continuing Pomodoro with task: ${task.title}`
-            : `Started tracking task: ${task.title}`,
+          isPomodoro: false,
+          notes: `Started tracking task: ${task.title}`,
           localDate: dayjs().format('YYYY-MM-DD'),
         });
 
@@ -265,11 +262,7 @@ export default function TaskManager() {
         queryClient.invalidateQueries({ queryKey: ['activeTimeEntry'] });
         queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
 
-        if (activeEntry.isPomodoro) {
-          setSnackbarMessage(`🍅 Pomodoro continues with task: ${task.title}`);
-        } else {
-          setSnackbarMessage(`🔄 Switched to tracking task: ${task.title}`);
-        }
+        setSnackbarMessage(`🔄 Switched to tracking task: ${task.title}`);
       } else {
         // Start new time tracking for this task (default to non-Pomodoro)
         await timeEntriesApi.startWithTask({

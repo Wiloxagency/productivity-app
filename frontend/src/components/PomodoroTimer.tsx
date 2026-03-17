@@ -170,6 +170,7 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
     queryKey: ['activeTimeEntry'],
     queryFn: timeEntriesApi.getActive,
     refetchInterval: 5000, // Refresh every 5 seconds
+    refetchIntervalInBackground: true,
   });
   const todayDate = dayjs().format('YYYY-MM-DD');
   const { data: todayTimeEntries = [] } = useQuery({

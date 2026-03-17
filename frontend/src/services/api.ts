@@ -89,6 +89,7 @@ export const projectsApi = {
 // Planning API
 export const planningApi = {
   getPlanning: (date: string) => api.get<DailyPlanning>(`/planning/${date}`).then(res => res.data),
+  getLatestBefore: (date: string) => api.get<DailyPlanning | null>(`/planning/latest-before/${date}`).then(res => res.data),
   updatePlanning: (date: string, planning: Partial<DailyPlanning>) => 
     api.post<DailyPlanning>(`/planning/${date}`, planning).then(res => res.data),
   completeTask: (date: string, taskId: string, data: { completed: boolean; actualDuration?: number }) => 

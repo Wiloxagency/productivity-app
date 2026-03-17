@@ -86,6 +86,7 @@ export default function DailyPlanning() {
     queryKey: ['activeTimeEntry'],
     queryFn: timeEntriesApi.getActive,
     refetchInterval: 5000,
+    refetchIntervalInBackground: true,
   });
 
   // Update current time for real-time duration calculation
@@ -225,8 +226,14 @@ export default function DailyPlanning() {
     mutationFn: async () => {
       if (!planning) return null;
 
-      const previousDate = selectedDate.subtract(1, 'day').format('YYYY-MM-DD');
-      const previousDayEntries = await timeEntriesApi.getAll({ date: previousDate });
+      const selectedDateKey = selectedDate.format('YYYY-MM-DD');
+      const latestPreviousPlanning = await planningApi.getLatestBefore(selectedDateKey);
+      const referencePlanningDateKey = latestPreviousPlanning?.date
+        ? dayjs(latestPreviousPlanning.date).format('YYYY-MM-DD')
+        : null;
+      const referenceDayEntries = referencePlanningDateKey
+        ? await timeEntriesApi.getAll({ date: referencePlanningDateKey })
+        : [];
 
       const combinedItems = [
         ...(planning.plannedTasks || []).map((pt, index) => ({
@@ -273,7 +280,7 @@ export default function DailyPlanning() {
 
       const previousDayOrderByKey: Record<string, number> = {};
       let previousDayOrderCounter = 0;
-      previousDayEntries
+      referenceDayEntries
         .filter((entry) => entry.task?._id || entry.activity?._id)
         .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
         .forEach((entry) => {
@@ -286,6 +293,45 @@ export default function DailyPlanning() {
             previousDayOrderCounter += 1;
           }
         });
+
+      // If the latest planning day has no tracked entries, fall back to that planning order.
+      if (!referenceDayEntries.length && latestPreviousPlanning) {
+        const referencePlanningItems = [
+          ...(latestPreviousPlanning.plannedTasks || []).map((pt, index) => ({
+            type: 'task' as const,
+            itemId: pt.task?._id,
+            priority: pt.priority,
+            plannedStartTime: pt.plannedStartTime,
+            originalIndex: index,
+          })),
+          ...(latestPreviousPlanning.plannedActivities || []).map((pa, index) => ({
+            type: 'activity' as const,
+            itemId: pa.activity?._id,
+            priority: pa.priority,
+            plannedStartTime: pa.plannedStartTime,
+            originalIndex: (latestPreviousPlanning.plannedTasks?.length || 0) + index,
+          })),
+        ]
+          .filter((entry) => !!entry.itemId)
+          .sort((a, b) => {
+            const aPriority = typeof a.priority === 'number' ? a.priority : Number.MAX_SAFE_INTEGER;
+            const bPriority = typeof b.priority === 'number' ? b.priority : Number.MAX_SAFE_INTEGER;
+            if (aPriority !== bPriority) return aPriority - bPriority;
+
+            const aTime = a.plannedStartTime ? new Date(a.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+            const bTime = b.plannedStartTime ? new Date(b.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
+            if (aTime !== bTime) return aTime - bTime;
+
+            return a.originalIndex - b.originalIndex;
+          });
+
+        referencePlanningItems.forEach((entry, index) => {
+          const key = `${entry.type}:${entry.itemId}`;
+          if (previousDayOrderByKey[key] === undefined) {
+            previousDayOrderByKey[key] = index;
+          }
+        });
+      }
 
       const backlogOrderByTaskId: Record<string, number> = {};
       backlogTasks.forEach((task, index) => {
@@ -301,7 +347,7 @@ export default function DailyPlanning() {
         const aHasPreviousOrder = aPreviousOrder !== undefined;
         const bHasPreviousOrder = bPreviousOrder !== undefined;
 
-        // Always prioritize and preserve the actual interleaved sequence from yesterday.
+        // Always prioritize and preserve the sequence from the latest prior planning reference.
         if (aHasPreviousOrder && bHasPreviousOrder && aPreviousOrder !== bPreviousOrder) {
           return aPreviousOrder - bPreviousOrder;
         }
@@ -309,7 +355,7 @@ export default function DailyPlanning() {
           return aHasPreviousOrder ? -1 : 1;
         }
 
-        // For tasks not executed yesterday, use current Task Backlog order.
+        // For tasks without reference-day ranking, use current Task Backlog order.
         if (!aHasPreviousOrder && !bHasPreviousOrder && a.type === 'task' && b.type === 'task') {
           const aBacklogOrder = backlogOrderByTaskId[a.itemId];
           const bBacklogOrder = backlogOrderByTaskId[b.itemId];

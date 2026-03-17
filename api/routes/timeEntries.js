@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const TimeEntry = require('../models/TimeEntry');
+const POMODORO_WORK_DURATION_MINUTES = 60;
+const POMODORO_BREAK_DURATION_MINUTES = 10;
 
 // GET all time entries with filtering
 router.get('/', async (req, res) => {
@@ -63,6 +65,23 @@ router.get('/active', async (req, res) => {
           select: 'name color'
         }
       });
+
+    if (activeEntry && activeEntry.isPomodoro) {
+      const activityName = (activeEntry.activity?.name || '').trim().toLowerCase();
+      const isBreakEntry = activeEntry.isBreak || activityName === 'break time';
+      const maxDurationSeconds = (isBreakEntry ? POMODORO_BREAK_DURATION_MINUTES : POMODORO_WORK_DURATION_MINUTES) * 60;
+      const startTimeMs = new Date(activeEntry.startTime).getTime();
+      const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000));
+
+      if (elapsedSeconds >= maxDurationSeconds) {
+        const completedAt = new Date(startTimeMs + (maxDurationSeconds * 1000));
+        activeEntry.endTime = completedAt;
+        activeEntry.isActive = false;
+        activeEntry.pomodoroCompleted = true;
+        await activeEntry.save();
+        return res.json(null);
+      }
+    }
     
     res.json(activeEntry);
   } catch (error) {

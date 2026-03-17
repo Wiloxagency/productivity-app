@@ -3,6 +3,42 @@ const router = express.Router();
 const DailyPlanning = require('../models/DailyPlanning');
 const Task = require('../models/Task');
 const TimeEntry = require('../models/TimeEntry');
+// GET latest prior planning day (before provided date) that has scheduled items
+router.get('/latest-before/:date', async (req, res) => {
+  try {
+    const targetDate = new Date(req.params.date);
+    if (Number.isNaN(targetDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+
+    const planning = await DailyPlanning.findOne({
+      date: { $lt: targetDate },
+      $or: [
+        { 'plannedTasks.0': { $exists: true } },
+        { 'plannedActivities.0': { $exists: true } }
+      ]
+    })
+      .sort({ date: -1 })
+      .populate({
+        path: 'plannedTasks.task',
+        populate: {
+          path: 'category',
+          select: 'name color'
+        }
+      })
+      .populate({
+        path: 'plannedActivities.activity',
+        populate: {
+          path: 'category',
+          select: 'name color'
+        }
+      });
+
+    res.json(planning || null);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET planning for specific date
 router.get('/:date', async (req, res) => {
