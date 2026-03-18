@@ -34,6 +34,7 @@ import {
   Schedule as PlanIcon,
   ViewModule as MatrixIcon,
   List as ListIcon,
+  Event as DeadlineIcon,
   PriorityHigh as PriorityIcon,
   FolderOpen as ProjectIcon,
   Assessment as ActivityIcon,
@@ -49,6 +50,7 @@ import { tasksApi, categoriesApi, activitiesApi, timeEntriesApi, projectsApi } f
 import { Task, Category, Project, QuadrantColors, QuadrantLabels } from '../types';
 import ProjectManager from '../components/ProjectManager';
 import ActivityManager from '../components/ActivityManager';
+import DeadlineManager from '../components/DeadlineManager';
 import TaskCard from '../components/TaskCard';
 
 interface TabPanelProps {
@@ -446,6 +448,10 @@ export default function TaskManager() {
             icon={<ActivityIcon />}
             label={`Activities (${activities.length})`}
           />
+          <Tab
+            icon={<DeadlineIcon />}
+            label="DEADLINE"
+          />
           <Tab 
             icon={<Q1Icon />}
             label={`Q1: Do (${tasksByQuadrant[1].length})`}
@@ -735,10 +741,14 @@ export default function TaskManager() {
       <TabPanel value={currentTab} index={3}>
         <ActivityManager />
       </TabPanel>
+      {/* Deadline View */}
+      <TabPanel value={currentTab} index={4}>
+        <DeadlineManager />
+      </TabPanel>
 
       {/* Individual Quadrant Views */}
       {[1, 2, 3, 4].map((quadrant) => (
-        <TabPanel key={quadrant} value={currentTab} index={quadrant + 3}>
+        <TabPanel key={quadrant} value={currentTab} index={quadrant + 4}>
           <Grid container spacing={3}>
             <Grid item xs={12}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>

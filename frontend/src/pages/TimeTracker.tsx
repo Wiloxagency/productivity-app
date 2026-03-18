@@ -453,16 +453,15 @@ export default function TimeTracker() {
     return entry.duration;
   };
 
-  // Calculate total time including active entries
-  const totalTime = timeEntries.reduce((sum, entry) => {
+  // Actual tracked totals from Time Entries table (Duration column)
+  const totalTrackedTime = timeEntries.reduce((sum, entry) => {
     return sum + calculateCurrentDuration(entry);
   }, 0);
 
-  // Calculate work time (work category + break time)
+  // Work Time = Work category + Break entries
   const workTime = timeEntries.reduce((sum, entry) => {
-    const isWorkCategory = entry.activity?.category?.name === 'Work' || entry.task?.category?.name === 'Work';
+    const isWorkCategory = (entry.activity?.category?.name || entry.task?.category?.name || '').trim().toLowerCase() === 'work';
     const isBreakTime = entry.isBreak;
-    
     if (isWorkCategory || isBreakTime) {
       return sum + calculateCurrentDuration(entry);
     }
@@ -500,25 +499,9 @@ export default function TimeTracker() {
     const isTask = 'task' in item;
     return sum + (item.plannedDuration || (isTask ? item.task?.estimatedTime : item.activity?.estimatedDuration) || 0);
   }, 0);
-  const getCompletedPlannedCredit = (items: any[]) =>
-    items.reduce((sum, item) => {
-      if (!item.completed) return sum;
-      const isTask = 'task' in item;
-      const plannedDuration =
-        item.plannedDuration ||
-        (isTask ? item.task?.estimatedTime : item.activity?.estimatedDuration) ||
-        0;
-      const actualDuration = item.actualDuration || 0;
-      // If the item is completed, count at least its planned duration in overview progress.
-      return sum + Math.max(plannedDuration, actualDuration);
-    }, 0);
 
-  const workCompletedCredit = getCompletedPlannedCredit(workPlannedItems as any[]);
-  const otherCompletedCredit = getCompletedPlannedCredit(otherPlannedItems as any[]);
-
-  const workActualTime = Math.max(workTime, workCompletedCredit);
-  const otherTrackedTime = Math.max(0, totalTime - workTime);
-  const otherActualTime = Math.max(otherTrackedTime, otherCompletedCredit);
+  const workActualTime = workTime;
+  const otherActualTime = Math.max(0, totalTrackedTime - workActualTime);
   const productivityScore = workPlannedTime > 0
     ? Math.min(100, Math.round((workActualTime / workPlannedTime) * 100))
     : 0;

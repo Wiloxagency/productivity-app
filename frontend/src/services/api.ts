@@ -2,6 +2,7 @@ import axios from 'axios';
 import { 
   Activity, 
   Category, 
+  DeadlineItem,
   Project,
   TimeEntry, 
   Task, 
@@ -84,6 +85,14 @@ export const projectsApi = {
   delete: (id: string) => api.delete(`/projects/${id}`).then(res => res.data),
   archive: (id: string, archived: boolean) => api.patch<Project>(`/projects/${id}/archive`, { archived }).then(res => res.data),
   getStats: (id: string) => api.get(`/projects/${id}/stats`).then(res => res.data),
+};
+
+// Deadlines API (manual deadline items)
+export const deadlinesApi = {
+  getAll: () => api.get<DeadlineItem[]>('/deadlines').then(res => res.data),
+  create: (item: Partial<DeadlineItem>) => api.post<DeadlineItem>('/deadlines', item).then(res => res.data),
+  update: (id: string, item: Partial<DeadlineItem>) => api.put<DeadlineItem>(`/deadlines/${id}`, item).then(res => res.data),
+  delete: (id: string) => api.delete(`/deadlines/${id}`).then(res => res.data),
 };
 
 // Planning API

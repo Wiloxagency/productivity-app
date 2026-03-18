@@ -24,6 +24,17 @@ export interface Project {
   updatedAt: string;
 }
 
+export interface DeadlineItem {
+  _id: string;
+  title: string;
+  description?: string;
+  type: 'Project' | 'Task' | 'Promise';
+  commitmentDate: string;
+  finalDeliveryDate: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Activity {
   _id: string;
   name: string;

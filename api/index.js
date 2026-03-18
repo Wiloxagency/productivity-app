@@ -27,6 +27,7 @@ const taskRoutes = require('./routes/tasks');
 const categoryRoutes = require('./routes/categories');
 const planningRoutes = require('./routes/planning');
 const projectRoutes = require('./routes/projects');
+const deadlineRoutes = require('./routes/deadlines');
 const defaultSelectionsRoutes = require('./routes/default-selections');
 
 // Use routes
@@ -36,6 +37,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/planning', planningRoutes);
 app.use('/api/projects', projectRoutes);
+app.use('/api/deadlines', deadlineRoutes);
 app.use('/api/default-selections', defaultSelectionsRoutes);
 
 // Error handling middleware
