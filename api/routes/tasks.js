@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Task = require('../models/Task');
+const { normalizeTaskDeadlinePayload } = require('../utils/taskDeadline');
 
 // GET all tasks with filtering
 router.get('/', async (req, res) => {
@@ -70,7 +71,8 @@ router.get('/daily/:date', async (req, res) => {
 // POST create new task
 router.post('/', async (req, res) => {
   try {
-    const task = new Task(req.body);
+    const normalizedTaskBody = normalizeTaskDeadlinePayload({ ...req.body });
+    const task = new Task(normalizedTaskBody);
     await task.save();
     await task.populate('category', 'name color');
     await task.populate('project', 'name color');
@@ -107,13 +109,15 @@ router.put('/reorder', async (req, res) => {
 // PUT update task
 router.put('/:id', async (req, res) => {
   try {
-    if (req.body.status === 'Completed' && !req.body.completedAt) {
-      req.body.completedAt = new Date();
+    const updateData = normalizeTaskDeadlinePayload({ ...req.body });
+
+    if (updateData.status === 'Completed' && !updateData.completedAt) {
+      updateData.completedAt = new Date();
     }
     
     const task = await Task.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      updateData,
       { new: true, runValidators: true }
     ).populate('category', 'name color')
      .populate('project', 'name color');
@@ -132,12 +136,18 @@ router.put('/:id', async (req, res) => {
 router.put('/:id/plan', async (req, res) => {
   try {
     const { plannedDate, priority } = req.body;
+
+    if (!plannedDate) {
+      return res.status(400).json({ error: 'plannedDate is required' });
+    }
+
+    const normalizedDeadlineData = normalizeTaskDeadlinePayload({ plannedDate });
     
     const task = await Task.findByIdAndUpdate(
       req.params.id,
       {
         // Do NOT change status - keep original backlog status
-        plannedDate: new Date(plannedDate),
+        ...normalizedDeadlineData,
         priority: priority || 1
       },
       { new: true, runValidators: true }

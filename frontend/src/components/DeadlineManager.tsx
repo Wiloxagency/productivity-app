@@ -132,7 +132,12 @@ export default function DeadlineManager() {
       }));
 
     const taskDeadlineItems: DeadlineListItem[] = (tasks as Task[])
-      .filter((task) => !!task.plannedDate && task.status !== 'Completed' && task.status !== 'Cancelled')
+      .filter(
+        (task) =>
+          (!!task.dueDate || !!task.plannedDate) &&
+          task.status !== 'Completed' &&
+          task.status !== 'Cancelled'
+      )
       .map((task) => ({
         id: `task:${task._id}`,
         title: task.title,
@@ -140,7 +145,7 @@ export default function DeadlineManager() {
         type: 'Task',
         source: 'Task',
         createdAt: task.createdAt,
-        commitmentDate: task.plannedDate!,
+        commitmentDate: task.dueDate || task.plannedDate!,
       }));
 
     return [...manualDeadlineItems, ...projectDeadlineItems, ...taskDeadlineItems].sort((a, b) => {
@@ -171,7 +176,7 @@ export default function DeadlineManager() {
             📅 DEADLINE
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Deadlines from manual commitments, active projects with target end date, and planned unfinished tasks.
+            Deadlines from manual commitments, active projects with target end date, and unfinished tasks with due/planned dates.
           </Typography>
         </Box>
         <Button

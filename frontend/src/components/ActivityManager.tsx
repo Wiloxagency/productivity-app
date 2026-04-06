@@ -34,6 +34,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { activitiesApi, categoriesApi } from '../services/api';
 import { Activity, Category, QuadrantColors, QuadrantLabels } from '../types';
+const SCHEDULE_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 export default function ActivityManager() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -47,7 +48,9 @@ export default function ActivityManager() {
     quadrant: 1,
     estimatedDuration: 25,
     color: '#1976d2',
+    scheduleTime: '',
   });
+  const isScheduleTimeValid = !formData.scheduleTime || SCHEDULE_TIME_PATTERN.test(formData.scheduleTime);
 
   const queryClient = useQueryClient();
 
@@ -99,6 +102,7 @@ export default function ActivityManager() {
       quadrant: 1,
       estimatedDuration: 25,
       color: '#1976d2',
+      scheduleTime: '',
     });
   };
 
@@ -112,6 +116,7 @@ export default function ActivityManager() {
         quadrant: activity.quadrant,
         estimatedDuration: activity.estimatedDuration,
         color: activity.color,
+        scheduleTime: activity.scheduleTime || '',
       });
     } else {
       setEditingActivity(null);
@@ -121,6 +126,9 @@ export default function ActivityManager() {
   };
 
   const handleSubmit = () => {
+    if (!isScheduleTimeValid) {
+      return;
+    }
     const activityData = {
       name: formData.name,
       description: formData.description,
@@ -128,6 +136,7 @@ export default function ActivityManager() {
       quadrant: formData.quadrant,
       estimatedDuration: formData.estimatedDuration,
       color: formData.color,
+      scheduleTime: formData.scheduleTime || null,
     } as any;
 
     if (editingActivity) {
@@ -389,6 +398,21 @@ export default function ActivityManager() {
               />
             </Grid>
             
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Schedule Time (optional)"
+                type="text"
+                value={formData.scheduleTime}
+                onChange={(e) => setFormData({ ...formData, scheduleTime: e.target.value })}
+                placeholder="HH:mm"
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ maxLength: 5, inputMode: 'numeric' }}
+                error={!!formData.scheduleTime && !isScheduleTimeValid}
+                helperText={formData.scheduleTime && !isScheduleTimeValid ? 'Use HH:mm format (e.g. 09:30)' : 'HH:mm format'}
+              />
+            </Grid>
+            
             <Grid item xs={12}>
               <TextField
                 fullWidth
@@ -409,6 +433,7 @@ export default function ActivityManager() {
             disabled={
               !formData.name || 
               !formData.category || 
+              !isScheduleTimeValid ||
               createActivityMutation.isPending || 
               updateActivityMutation.isPending
             }

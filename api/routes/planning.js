@@ -262,9 +262,13 @@ router.post('/:date', async (req, res) => {
     
     // Update only plannedDate, do NOT change status (keep backlog status intact)
     if (plannedTasks) {
+      const normalizedDeadlineDate = new Date(date);
       await Task.updateMany(
         { _id: { $in: plannedTasks.map(pt => pt.task) } },
-        { plannedDate: date }
+        {
+          plannedDate: normalizedDeadlineDate,
+          dueDate: normalizedDeadlineDate
+        }
       );
     }
     

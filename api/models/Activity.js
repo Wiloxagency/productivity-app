@@ -41,6 +41,10 @@ const activitySchema = new mongoose.Schema({
   color: {
     type: String,
     default: '#28a745'
+  },
+  scheduleTime: {
+    type: String, // HH:mm format
+    trim: true
   }
 }, {
   timestamps: true

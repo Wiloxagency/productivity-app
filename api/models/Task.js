@@ -56,6 +56,10 @@ const taskSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'TimeEntry'
   }],
+  scheduleTime: {
+    type: String, // HH:mm format
+    trim: true
+  },
   tags: [String]
 }, {
   timestamps: true

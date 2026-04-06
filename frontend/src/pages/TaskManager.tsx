@@ -46,12 +46,13 @@ import {
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
-import { tasksApi, categoriesApi, activitiesApi, timeEntriesApi, projectsApi } from '../services/api';
+import { tasksApi, categoriesApi, activitiesApi, timeEntriesApi, projectsApi, deadlinesApi } from '../services/api';
 import { Task, Category, Project, QuadrantColors, QuadrantLabels } from '../types';
 import ProjectManager from '../components/ProjectManager';
 import ActivityManager from '../components/ActivityManager';
 import DeadlineManager from '../components/DeadlineManager';
 import TaskCard from '../components/TaskCard';
+const SCHEDULE_TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -93,7 +94,9 @@ export default function TaskManager() {
     estimatedTime: 25,
     tags: '',
     dueDate: null as dayjs.Dayjs | null,
+    scheduleTime: '',
   });
+  const isScheduleTimeValid = !formData.scheduleTime || SCHEDULE_TIME_PATTERN.test(formData.scheduleTime);
 
   const queryClient = useQueryClient();
 
@@ -123,6 +126,25 @@ export default function TaskManager() {
     queryKey: ['projects'],
     queryFn: () => projectsApi.getAll(),
   });
+
+  const { data: allTasks = [] } = useQuery({
+    queryKey: ['tasks'],
+    queryFn: () => tasksApi.getAll(),
+  });
+
+  const { data: manualDeadlineItems = [] } = useQuery({
+    queryKey: ['deadlineItems'],
+    queryFn: () => deadlinesApi.getAll(),
+  });
+
+  const deadlineProjectsCount = projects.filter((project) => !project.isArchived && !!project.targetEndDate).length;
+  const deadlineTasksCount = allTasks.filter(
+    (task) =>
+      (!!task.dueDate || !!task.plannedDate) &&
+      task.status !== 'Completed' &&
+      task.status !== 'Cancelled'
+  ).length;
+  const deadlineItemsCount = manualDeadlineItems.length + deadlineProjectsCount + deadlineTasksCount;
 
   // Get tasks by quadrant
   const tasksByQuadrant = {
@@ -194,6 +216,7 @@ export default function TaskManager() {
       estimatedTime: 25,
       tags: '',
       dueDate: null,
+      scheduleTime: '',
     });
   };
 
@@ -210,6 +233,7 @@ export default function TaskManager() {
         estimatedTime: task.estimatedTime,
         tags: task.tags.join(', '),
         dueDate: task.dueDate ? dayjs(task.dueDate) : null,
+        scheduleTime: task.scheduleTime || '',
       });
     } else {
       setEditingTask(null);
@@ -219,6 +243,9 @@ export default function TaskManager() {
   };
 
   const handleSubmit = () => {
+    if (!isScheduleTimeValid) {
+      return;
+    }
     const taskData = {
       title: formData.title,
       description: formData.description,
@@ -228,7 +255,8 @@ export default function TaskManager() {
       status: formData.status,
       estimatedTime: formData.estimatedTime,
       tags: formData.tags.split(',').map(tag => tag.trim()).filter(tag => tag),
-      dueDate: formData.dueDate?.toISOString(),
+      dueDate: formData.dueDate ? formData.dueDate.toISOString() : null,
+      scheduleTime: formData.scheduleTime || null,
     } as any;
 
     if (editingTask) {
@@ -450,7 +478,7 @@ export default function TaskManager() {
           />
           <Tab
             icon={<DeadlineIcon />}
-            label="DEADLINE"
+            label={`DEADLINE (${deadlineItemsCount})`}
           />
           <Tab 
             icon={<Q1Icon />}
@@ -954,6 +982,21 @@ export default function TaskManager() {
               />
             </Grid>
             
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Schedule Time (optional)"
+                type="text"
+                value={formData.scheduleTime}
+                onChange={(e) => setFormData({ ...formData, scheduleTime: e.target.value })}
+                placeholder="HH:mm"
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ maxLength: 5, inputMode: 'numeric' }}
+                error={!!formData.scheduleTime && !isScheduleTimeValid}
+                helperText={formData.scheduleTime && !isScheduleTimeValid ? 'Use HH:mm format (e.g. 09:30)' : 'HH:mm format'}
+              />
+            </Grid>
+            
             <Grid item xs={12}>
               <TextField
                 fullWidth
@@ -971,7 +1014,7 @@ export default function TaskManager() {
           <Button
             variant="contained"
             onClick={handleSubmit}
-            disabled={!formData.title || !formData.category || !formData.project || createTaskMutation.isPending || updateTaskMutation.isPending}
+            disabled={!formData.title || !formData.category || !formData.project || !isScheduleTimeValid || createTaskMutation.isPending || updateTaskMutation.isPending}
           >
             {editingTask ? 'Update' : 'Create'} Task
           </Button>

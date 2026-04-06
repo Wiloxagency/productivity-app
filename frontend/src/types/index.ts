@@ -45,6 +45,7 @@ export interface Activity {
   isDefault: boolean;
   estimatedDuration: number;
   color: string;
+  scheduleTime?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -82,6 +83,7 @@ export interface Task {
   plannedDate?: string;
   relatedTimeEntries: string[];
   tags: string[];
+  scheduleTime?: string;
   createdAt: string;
   updatedAt: string;
 }
