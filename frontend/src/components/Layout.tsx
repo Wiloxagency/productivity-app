@@ -11,6 +11,7 @@ import {
   ListItemIcon,
   ListItemText,
   Toolbar,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import {
@@ -22,6 +23,7 @@ import {
   Today as PlanningIcon,
   Analytics as ReportsIcon,
   Settings as SettingsIcon,
+  BoltRounded as BrandIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 
@@ -56,41 +58,100 @@ export default function Layout({ children }: LayoutProps) {
   };
 
   const drawer = (collapsed = false) => (
-    <div>
-      <Toolbar>
-        {!collapsed && (
-          <Typography variant="h6" noWrap>
-            Productivity App
-          </Typography>
-        )}
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Toolbar sx={{ px: collapsed ? 1 : 2.5 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.25,
+            width: '100%',
+            justifyContent: collapsed ? 'center' : 'flex-start',
+          }}
+        >
+          <Box
+            sx={{
+              width: 38,
+              height: 38,
+              borderRadius: 2,
+              flexShrink: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              background: 'linear-gradient(135deg, #6366f1 0%, #4f46e5 100%)',
+              boxShadow: '0 6px 16px rgba(79,70,229,0.35)',
+            }}
+          >
+            <BrandIcon fontSize="small" />
+          </Box>
+          {!collapsed && (
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 800, lineHeight: 1.15 }}>
+                Productivity
+              </Typography>
+              <Typography variant="caption" color="text.secondary" noWrap>
+                Time &amp; Focus
+              </Typography>
+            </Box>
+          )}
+        </Box>
       </Toolbar>
-      <List>
-        {menuItems.map((item) => (
-          <ListItem key={item.text} disablePadding>
+
+      <List sx={{ px: 1, py: 1, flexGrow: 1 }}>
+        {menuItems.map((item) => {
+          const selected = location.pathname === item.path;
+          const button = (
             <ListItemButton
-              selected={location.pathname === item.path}
+              selected={selected}
               onClick={() => navigate(item.path)}
               sx={{
-                minHeight: 48,
+                minHeight: 46,
                 justifyContent: collapsed ? 'center' : 'initial',
-                px: 2.5,
+                px: 2,
               }}
             >
               <ListItemIcon
                 sx={{
                   minWidth: 0,
-                  mr: collapsed ? 'auto' : 3,
+                  mr: collapsed ? 'auto' : 2.25,
                   justifyContent: 'center',
+                  color: selected ? 'primary.main' : 'text.secondary',
                 }}
               >
                 {item.icon}
               </ListItemIcon>
-              {!collapsed && <ListItemText primary={item.text} />}
+              {!collapsed && (
+                <ListItemText
+                  primary={item.text}
+                  primaryTypographyProps={{ fontWeight: 600, fontSize: 14 }}
+                />
+              )}
             </ListItemButton>
-          </ListItem>
-        ))}
+          );
+
+          return (
+            <ListItem key={item.text} disablePadding sx={{ display: 'block', mb: 0.5 }}>
+              {collapsed ? (
+                <Tooltip title={item.text} placement="right">
+                  {button}
+                </Tooltip>
+              ) : (
+                button
+              )}
+            </ListItem>
+          );
+        })}
       </List>
-    </div>
+
+      {!collapsed && (
+        <Box sx={{ p: 2 }}>
+          <Typography variant="caption" color="text.secondary">
+            Productivity App · v1
+          </Typography>
+        </Box>
+      )}
+    </Box>
   );
 
   return (
@@ -128,10 +189,22 @@ export default function Layout({ children }: LayoutProps) {
           >
             {desktopCollapsed ? <MenuIcon /> : <MenuOpenIcon />}
           </IconButton>
-          
-          <Typography variant="h6" noWrap>
-            {menuItems.find(item => item.path === location.pathname)?.text || 'Productivity App'}
-          </Typography>
+
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
+            <Box
+              sx={{
+                display: { xs: 'none', sm: 'flex' },
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'primary.main',
+              }}
+            >
+              {menuItems.find((item) => item.path === location.pathname)?.icon}
+            </Box>
+            <Typography variant="h6" noWrap sx={{ fontWeight: 700 }}>
+              {menuItems.find((item) => item.path === location.pathname)?.text || 'Productivity App'}
+            </Typography>
+          </Box>
         </Toolbar>
       </AppBar>
       <Box

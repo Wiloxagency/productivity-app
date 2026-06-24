@@ -41,6 +41,7 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
   const [isBreak, setIsBreak] = useState(false);
   const [duration, setDuration] = useState(POMODORO_SETTINGS.WORK_DURATION); // minutes
   const [timeLeft, setTimeLeft] = useState(POMODORO_SETTINGS.WORK_DURATION * 60); // seconds
+  const [overtimeSeconds, setOvertimeSeconds] = useState(0); // seconds elapsed beyond the target duration
   const [isRunning, setIsRunning] = useState(false);
   const [sessionRefreshAt, setSessionRefreshAt] = useState(dayjs());
   const notes = '';
@@ -341,8 +342,10 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
   }, [isRunning, activeEntry?.isPomodoro]);
 
   // Authoritative timer synchronization from active entry timestamps.
-  // Uses the same source of truth as Time Entries duration (startTime + now),
-  // while only enabling Pomodoro completion behavior for isPomodoro entries.
+  // Uses the same source of truth as Time Entries duration (startTime + now).
+  // Pomodoro entries keep running past their target duration until the user
+  // takes a manual action (stop, switch activity/task, start a break). Reaching
+  // the target only fires a one-time notification and starts counting overtime.
   useEffect(() => {
     if (!activeEntry) return;
 
@@ -360,12 +363,33 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
       const now = Date.now();
       const elapsedSeconds = Math.max(0, Math.floor((now - startTime) / 1000));
       const totalSeconds = currentDuration * 60;
-      const remaining = Math.max(0, totalSeconds - elapsedSeconds);
+      const remaining = totalSeconds - elapsedSeconds;
 
       setIsBreak(isBreakActivity);
       setDuration(currentDuration);
-      setTimeLeft(remaining);
-      setIsRunning(activeEntry.isPomodoro ? remaining > 0 : false);
+
+      if (activeEntry.isPomodoro) {
+        if (remaining > 0) {
+          setTimeLeft(remaining);
+          setOvertimeSeconds(0);
+        } else {
+          // Target reached: do NOT stop. Keep tracking, count overtime and
+          // notify the user a single time that the target has been reached.
+          setTimeLeft(0);
+          setOvertimeSeconds(-remaining);
+          const completionKey = `${activeEntry._id}:${activeEntry.startTime}`;
+          if (!hasCompletionBeenNotified(completionKey)) {
+            markCompletionAsNotified(completionKey);
+            handleTimerComplete();
+          }
+        }
+        // Remains running until the user performs a manual action.
+        setIsRunning(true);
+      } else {
+        setTimeLeft(Math.max(0, remaining));
+        setOvertimeSeconds(0);
+        setIsRunning(false);
+      }
     };
 
     syncFromActiveEntry();
@@ -376,50 +400,9 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
     activeEntry?.startTime,
     activeEntry?.activity?._id,
     activeEntry?.activity?.name,
+    activeEntry?.isPomodoro,
     activities,
   ]);
-
-  // Handle timer completion when timeLeft reaches 0
-  useEffect(() => {
-    if (timeLeft !== 0 || isRunning) return;
-    if (!activeEntry || !activeEntry.isPomodoro) return;
-
-    const completionKey = `${activeEntry._id}:${activeEntry.startTime}`;
-    if (hasCompletionBeenNotified(completionKey)) return;
-    markCompletionAsNotified(completionKey);
-
-    // Trigger notifications and completion handler
-    handleTimerComplete();
-    const finalizePomodoroCycle = async () => {
-      try {
-        await stopTimerMutation.mutateAsync({
-          id: activeEntry._id,
-          notes: notes || 'Pomodoro completed',
-          keepTimerRunning: true,
-        });
-      } catch {
-        // ignore stop errors to still update local selector/mode state
-      }
-
-      setIsRunning(false);
-      switchToWorkMode();
-
-      if (backlogTasks.length > 0) {
-        const currentTaskIndex =
-          selectedType === 'task'
-            ? backlogTasks.findIndex((task) => task._id === selectedItem)
-            : -1;
-        const nextTask =
-          currentTaskIndex >= 0 && currentTaskIndex < backlogTasks.length - 1
-            ? backlogTasks[currentTaskIndex + 1]
-            : backlogTasks[0];
-        setSelectedType('task');
-        setSelectedItem(nextTask._id);
-      }
-    };
-
-    finalizePomodoroCycle();
-  }, [timeLeft, isRunning, activeEntry, activities, backlogTasks, selectedType, selectedItem]);
 
   // Sync with active entry and handle timer state
   useEffect(() => {
@@ -514,8 +497,9 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
     
     setDuration(currentDuration);
     setTimeLeft(currentDuration * 60);
+    setOvertimeSeconds(0);
     setIsRunning(shouldUsePomodoro);
-    
+
     if (selectedType === 'activity') {
       startTimerMutation.mutate({
         activity: selectedItem,
@@ -545,18 +529,8 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
     const currentDuration = isBreak ? POMODORO_SETTINGS.BREAK_DURATION : POMODORO_SETTINGS.WORK_DURATION;
     setDuration(currentDuration);
     setTimeLeft(currentDuration * 60);
+    setOvertimeSeconds(0);
     setIsRunning(false);
-  };
-
-  const switchToWorkMode = () => {
-    setIsBreak(false);
-    setDuration(POMODORO_SETTINGS.WORK_DURATION);
-    setTimeLeft(POMODORO_SETTINGS.WORK_DURATION * 60);
-
-    const breakActivity = activities.find(a => a.name && a.name.trim().toLowerCase() === 'break time');
-    if (breakActivity && selectedType === 'activity' && selectedItem === breakActivity._id) {
-      setSelectedItem('');
-    }
   };
 
   const handleSwitchMode = async () => {
@@ -651,7 +625,8 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
     }
   };
 
-  const progress = ((duration * 60 - timeLeft) / (duration * 60)) * 100;
+  const isOvertime = overtimeSeconds > 0;
+  const progress = Math.min(100, ((duration * 60 - timeLeft) / (duration * 60)) * 100);
   const isBreakCycleActive = isRunning && isBreak;
   const breakActivity = activities.find(
     a => a.name && a.name.trim().toLowerCase() === 'break time'
@@ -689,17 +664,26 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
             {isBreak ? '☕ Break Time' : '🍅 Work Time'}
           </Typography>
           
-          <Typography variant={compact ? 'h4' : 'h3'} sx={{ fontFamily: 'monospace', fontWeight: 'bold' }}>
-            {formatTime(timeLeft)}
+          <Typography
+            variant={compact ? 'h4' : 'h3'}
+            sx={{ fontFamily: 'monospace', fontWeight: 'bold', color: isOvertime ? 'warning.main' : undefined }}
+          >
+            {isOvertime ? `+${formatTime(overtimeSeconds)}` : formatTime(timeLeft)}
           </Typography>
-          
+
+          {isOvertime && (
+            <Typography variant="body2" sx={{ mt: 0.5, color: 'warning.main', fontWeight: 600 }}>
+              ⏱️ Target reached — still running until you stop, switch or take a break
+            </Typography>
+          )}
+
           <LinearProgress
             variant="determinate"
             value={progress}
             sx={{ mt: 2, height: 8, borderRadius: 4 }}
-            color={timeLeft === 0 ? 'success' : (isBreak ? 'success' : 'primary')}
+            color={isOvertime ? 'warning' : (isBreak ? 'success' : 'primary')}
           />
-          
+
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {selectedItemData ? `${selectedItemName} - ${duration} min` : 'Select an activity or task'}
           </Typography>

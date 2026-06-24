@@ -66,7 +66,11 @@ router.get('/active', async (req, res) => {
         }
       });
 
-    if (activeEntry && activeEntry.isPomodoro) {
+    // When a Pomodoro entry reaches its target duration we only flag it as
+    // completed (for reporting/stats). We intentionally DO NOT stop it: the
+    // entry keeps running until the user takes a manual action (stop, switch
+    // activity/task, start a break, etc.).
+    if (activeEntry && activeEntry.isPomodoro && !activeEntry.pomodoroCompleted) {
       const activityName = (activeEntry.activity?.name || '').trim().toLowerCase();
       const isBreakEntry = activeEntry.isBreak || activityName === 'break time';
       const maxDurationSeconds = (isBreakEntry ? POMODORO_BREAK_DURATION_MINUTES : POMODORO_WORK_DURATION_MINUTES) * 60;
@@ -74,15 +78,11 @@ router.get('/active', async (req, res) => {
       const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000));
 
       if (elapsedSeconds >= maxDurationSeconds) {
-        const completedAt = new Date(startTimeMs + (maxDurationSeconds * 1000));
-        activeEntry.endTime = completedAt;
-        activeEntry.isActive = false;
         activeEntry.pomodoroCompleted = true;
         await activeEntry.save();
-        return res.json(null);
       }
     }
-    
+
     res.json(activeEntry);
   } catch (error) {
     res.status(500).json({ error: error.message });

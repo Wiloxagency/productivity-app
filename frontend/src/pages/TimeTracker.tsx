@@ -411,8 +411,7 @@ export default function TimeTracker() {
     if (scheduledAt.isBefore(sessionEnd) || scheduledAt.isSame(sessionEnd)) {
       return 1; // upcoming in current 60-minute pomodoro window
     }
-
-    return 2; // keep existing ordering
+    return 3; // scheduled later today (deprioritized vs normal unscheduled items)
   };
 
   const trackedTaskIds = new Set(
@@ -471,7 +470,7 @@ export default function TimeTracker() {
             return aScheduleRank - bScheduleRank;
           }
 
-          if (aScheduleRank < 2 && bScheduleRank < 2) {
+          if ((aScheduleRank === 0 || aScheduleRank === 1) && (bScheduleRank === 0 || bScheduleRank === 1)) {
             const aScheduledAt = parseScheduleTimeForToday(a.scheduleTime);
             const bScheduledAt = parseScheduleTimeForToday(b.scheduleTime);
             const aScheduledTime = aScheduledAt ? aScheduledAt.valueOf() : Number.MAX_SAFE_INTEGER;
