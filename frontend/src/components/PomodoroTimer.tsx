@@ -582,13 +582,17 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
   const handleItemChange = async (value: string) => {
     const [type, id] = value.split(':') as ['activity' | 'task', string];
     const shouldUsePomodoro = isPomodoroEligibleSelection(type, id, isBreak);
-    
-    if (isRunning && activeEntry && (id !== selectedItem || type !== selectedType)) {
-      // Stop current time entry and start new one during running timer
+
+    // If there is an active entry, selecting a different item must stop it and
+    // start the new one — regardless of whether it was a Pomodoro (running) or a
+    // plain tracked entry (isRunning === false). Otherwise the active-entry sync
+    // would just revert the selection back.
+    if (activeEntry && (id !== selectedItem || type !== selectedType)) {
+      // Stop current time entry and start new one without losing tracking
       try {
         // First stop the current time entry (but keep timer running)
-        await stopTimerMutation.mutateAsync({ 
-          id: activeEntry._id, 
+        await stopTimerMutation.mutateAsync({
+          id: activeEntry._id,
           notes: `Switched during Pomodoro session`,
           keepTimerRunning: true
         });

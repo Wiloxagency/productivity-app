@@ -26,6 +26,9 @@ import {
   MenuItem,
   TextField,
   Stack,
+  Switch,
+  FormControlLabel,
+  Tooltip,
   keyframes,
 } from '@mui/material';
 import {
@@ -70,6 +73,7 @@ type PlannedItemPreview = {
   priority: number;
   plannedStartTime?: string;
   scheduleTime?: string;
+  plannedMinutes: number;
 };
 
 export default function TimeTracker() {
@@ -83,6 +87,7 @@ export default function TimeTracker() {
   const [switchConfirmOpen, setSwitchConfirmOpen] = useState(false);
   const [entryToSwitch, setEntryToSwitch] = useState<any>(null);
   const [currentTime, setCurrentTime] = useState(dayjs());
+  const [showAllPlanned, setShowAllPlanned] = useState(false);
   const [manualEntry, setManualEntry] = useState({
     item: '',
     type: 'activity' as 'activity' | 'task',
@@ -147,6 +152,9 @@ export default function TimeTracker() {
   const { data: timeEntries = [] } = useQuery({
     queryKey: ['timeEntries', selectedDate.format('YYYY-MM-DD')],
     queryFn: () => timeEntriesApi.getAll({ date: selectedDate.format('YYYY-MM-DD') }),
+    // Keep entries (and the duration-derived scores) fresh at least every minute.
+    refetchInterval: 60000,
+    refetchIntervalInBackground: true,
   });
 
   const { data: activeEntry } = useQuery({
@@ -159,11 +167,17 @@ export default function TimeTracker() {
   const { data: dailyPlanning } = useQuery({
     queryKey: ['dailyPlanning', selectedDate.format('YYYY-MM-DD')],
     queryFn: () => planningApi.getPlanning(selectedDate.format('YYYY-MM-DD')),
+    // The server recomputes Productivity & Personal Growth scores on each GET,
+    // so refetch every minute to avoid having to reload the browser.
+    refetchInterval: 60000,
+    refetchIntervalInBackground: true,
   });
 
   const { data: dailySummary } = useQuery({
     queryKey: ['dailySummary', selectedDate.format('YYYY-MM-DD')],
     queryFn: () => timeEntriesApi.getDailySummary(selectedDate.format('YYYY-MM-DD')),
+    refetchInterval: 60000,
+    refetchIntervalInBackground: true,
   });
 
   const deleteEntryMutation = useMutation({
@@ -414,18 +428,7 @@ export default function TimeTracker() {
     return 3; // scheduled later today (deprioritized vs normal unscheduled items)
   };
 
-  const trackedTaskIds = new Set(
-    timeEntries
-      .map((entry) => entry.task?._id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-  );
-  const trackedActivityIds = new Set(
-    timeEntries
-      .map((entry) => entry.activity?._id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0)
-  );
-
-  const nextThreeItems: PlannedItemPreview[] = dailyPlanning
+  const sortedPlannedItems: PlannedItemPreview[] = dailyPlanning
     ? [
         ...(dailyPlanning.plannedTasks || []).map((pt) => ({
           id: pt.task._id,
@@ -437,6 +440,7 @@ export default function TimeTracker() {
           priority: pt.priority,
           plannedStartTime: pt.plannedStartTime,
           scheduleTime: pt.task.scheduleTime,
+          plannedMinutes: pt.plannedDuration || pt.task.estimatedTime || 0,
           completed: pt.completed,
         })),
         ...(dailyPlanning.plannedActivities || []).map((pa) => ({
@@ -449,6 +453,7 @@ export default function TimeTracker() {
           priority: pa.priority,
           plannedStartTime: pa.plannedStartTime,
           scheduleTime: pa.activity.scheduleTime,
+          plannedMinutes: pa.plannedDuration || pa.activity.estimatedDuration || 0,
           completed: pa.completed,
         })),
       ]
@@ -456,11 +461,12 @@ export default function TimeTracker() {
           if (item.completed) return false;
           if (shouldHideFromNextThree(item)) return false;
           if (isHiddenFromNextThree(item)) return false;
+          // Keep partially-tracked (but not completed) items in the queue so the
+          // Duration column can show their remaining balance. Only the item that
+          // is currently active is excluded (it's already shown as the active row).
           if (item.type === 'task') {
-            if (trackedTaskIds.has(item.id)) return false;
             return item.id !== activeEntry?.task?._id;
           }
-          if (trackedActivityIds.has(item.id)) return false;
           return item.id !== activeEntry?.activity?._id;
         })
         .sort((a, b) => {
@@ -487,9 +493,12 @@ export default function TimeTracker() {
 
           return a.title.localeCompare(b.title);
         })
-        .slice(0, 3)
-        .reverse()
     : [];
+
+  // Show only the next 3 by default; the header switch expands to the full list.
+  const visiblePlannedItems = showAllPlanned ? sortedPlannedItems : sortedPlannedItems.slice(0, 3);
+  // Render with the highest-priority item closest to the Time Entries table.
+  const plannedItemsToRender = [...visiblePlannedItems].reverse();
 
   // Calculate real-time duration for active entries
   const calculateCurrentDuration = (entry: any): number => {
@@ -499,6 +508,29 @@ export default function TimeTracker() {
       return Math.max(0, elapsed);
     }
     return entry.duration;
+  };
+
+  // Minutes already tracked today per task/activity (includes the live active
+  // entry), used to estimate the remaining balance of queued planned items.
+  const trackedMinutesByTaskId = new Map<string, number>();
+  const trackedMinutesByActivityId = new Map<string, number>();
+  timeEntries.forEach((entry) => {
+    const minutes = calculateCurrentDuration(entry);
+    if (entry.task?._id) {
+      trackedMinutesByTaskId.set(entry.task._id, (trackedMinutesByTaskId.get(entry.task._id) || 0) + minutes);
+    } else if (entry.activity?._id) {
+      trackedMinutesByActivityId.set(entry.activity._id, (trackedMinutesByActivityId.get(entry.activity._id) || 0) + minutes);
+    }
+  });
+
+  // Remaining planned time for a queued item: planned estimate minus what has
+  // already been tracked today. Returns null when there is no planned estimate.
+  const getPlannedRemainingMinutes = (item: PlannedItemPreview): number | null => {
+    if (!item.plannedMinutes || item.plannedMinutes <= 0) return null;
+    const tracked = item.type === 'task'
+      ? trackedMinutesByTaskId.get(item.id) || 0
+      : trackedMinutesByActivityId.get(item.id) || 0;
+    return Math.max(0, item.plannedMinutes - tracked);
   };
 
   // Actual tracked totals from Time Entries table (Duration column)
@@ -800,14 +832,29 @@ export default function TimeTracker() {
                     <CalendarIcon fontSize="small" />
                   </IconButton>
                 </Box>
-                <Button
-                  variant="contained"
-                  size="small"
-                  startIcon={<AddIcon />}
-                  onClick={() => setDialogOpen(true)}
-                >
-                  Add Manual Entry
-                </Button>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  {sortedPlannedItems.length > 3 && (
+                    <FormControlLabel
+                      control={
+                        <Switch
+                          size="small"
+                          checked={showAllPlanned}
+                          onChange={(e) => setShowAllPlanned(e.target.checked)}
+                        />
+                      }
+                      label={`Show all (${sortedPlannedItems.length})`}
+                      sx={{ mr: 0.5, '& .MuiFormControlLabel-label': { fontSize: '0.8rem' } }}
+                    />
+                  )}
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={<AddIcon />}
+                    onClick={() => setDialogOpen(true)}
+                  >
+                    Add Manual Entry
+                  </Button>
+                </Box>
               </Box>
 
               <TableContainer component={Paper} variant="outlined" sx={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
@@ -824,7 +871,7 @@ export default function TimeTracker() {
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {nextThreeItems.map((item) => (
+                      {plannedItemsToRender.map((item) => (
                         <TableRow key={`planned-${item.type}-${item.id}`} sx={{ backgroundColor: 'action.hover' }}>
                           <TableCell>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -880,9 +927,40 @@ export default function TimeTracker() {
                             </Typography>
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              —
-                            </Typography>
+                            {(() => {
+                              const remaining = getPlannedRemainingMinutes(item);
+                              if (remaining === null) {
+                                return (
+                                  <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
+                                    —
+                                  </Typography>
+                                );
+                              }
+                              const tracked =
+                                item.type === 'task'
+                                  ? trackedMinutesByTaskId.get(item.id) || 0
+                                  : trackedMinutesByActivityId.get(item.id) || 0;
+                              return (
+                                <Tooltip
+                                  title={
+                                    tracked > 0
+                                      ? `Estimated remaining: ${formatTime(item.plannedMinutes)} planned − ${formatTime(tracked)} tracked today`
+                                      : `Estimated time (planned: ${formatTime(item.plannedMinutes)})`
+                                  }
+                                >
+                                  <Typography
+                                    variant="body2"
+                                    sx={{
+                                      fontSize: '0.8rem',
+                                      fontStyle: 'italic',
+                                      color: tracked > 0 ? 'warning.main' : 'text.secondary',
+                                    }}
+                                  >
+                                    ~{formatTime(remaining)}
+                                  </Typography>
+                                </Tooltip>
+                              );
+                            })()}
                           </TableCell>
                           <TableCell>
                             <Box sx={{ display: 'flex', gap: 1 }}>
@@ -1058,7 +1136,7 @@ export default function TimeTracker() {
                           </TableRow>
                         );
                       })}
-                      {timeEntries.length === 0 && nextThreeItems.length === 0 && (
+                      {timeEntries.length === 0 && plannedItemsToRender.length === 0 && (
                         <TableRow>
                           <TableCell colSpan={7} align="center">
                             <Typography variant="body2" color="text.secondary">
