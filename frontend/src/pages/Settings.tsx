@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
 import ActivityManager from '../components/ActivityManager';
+import AssistantSettingsForm from '../components/Assistant/AssistantSettingsForm';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -46,6 +47,7 @@ export default function Settings() {
           <Tab label="Activities" />
           <Tab label="Categories" />
           <Tab label="Other Settings" />
+          <Tab label="Asistente IA" />
         </Tabs>
       </Box>
       
@@ -74,6 +76,10 @@ export default function Settings() {
           <li>Notification preferences</li>
           <li>Theme and appearance options</li>
         </ul>
+      </TabPanel>
+
+      <TabPanel value={tabValue} index={3}>
+        <AssistantSettingsForm />
       </TabPanel>
     </Box>
   );

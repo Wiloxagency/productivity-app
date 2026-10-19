@@ -48,6 +48,8 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
   
   const queryClient = useQueryClient();
   const intervalRef = useRef<number | null>(null);
+  // Guards the one-time auto-stop of a break entry when its countdown hits zero.
+  const autoStoppedBreakRef = useRef<string | null>(null);
   const hasCompletionBeenNotified = (completionKey: string): boolean => {
     try {
       return window.sessionStorage.getItem(POMODORO_COMPLETION_NOTIFICATION_KEY) === completionKey;
@@ -373,11 +375,29 @@ export default function PomodoroTimer({ onTimerComplete, compact = false }: Pomo
           setTimeLeft(remaining);
           setOvertimeSeconds(0);
         } else {
-          // Target reached: do NOT stop. Keep tracking, count overtime and
-          // notify the user a single time that the target has been reached.
           setTimeLeft(0);
-          setOvertimeSeconds(-remaining);
           const completionKey = `${activeEntry._id}:${activeEntry.startTime}`;
+
+          if (isBreakActivity) {
+            // Break is the single exception to the "run until a manual action"
+            // rule: it MUST stop automatically the moment its countdown reaches
+            // zero, instead of counting overtime.
+            setOvertimeSeconds(0);
+            if (autoStoppedBreakRef.current !== completionKey) {
+              autoStoppedBreakRef.current = completionKey;
+              if (!hasCompletionBeenNotified(completionKey)) {
+                markCompletionAsNotified(completionKey);
+                handleTimerComplete();
+              }
+              setIsRunning(false);
+              stopTimerMutation.mutate({ id: activeEntry._id, notes });
+            }
+            return;
+          }
+
+          // Non-break pomodoro: do NOT stop. Keep tracking, count overtime and
+          // notify the user a single time that the target has been reached.
+          setOvertimeSeconds(-remaining);
           if (!hasCompletionBeenNotified(completionKey)) {
             markCompletionAsNotified(completionKey);
             handleTimerComplete();

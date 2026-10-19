@@ -46,6 +46,8 @@ export interface Activity {
   estimatedDuration: number;
   color: string;
   scheduleTime?: string;
+  autoStop?: boolean;
+  aliases?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -63,6 +65,10 @@ export interface TimeEntry {
   notes?: string;
   date: string;
   isActive: boolean;
+  plannedEnd?: string;
+  autoStop?: boolean;
+  sequenceId?: string;
+  source?: 'user' | 'assistant' | 'auto';
   createdAt: string;
   updatedAt: string;
 }
@@ -73,6 +79,8 @@ export interface Task {
   description?: string;
   category: Category;
   project?: Project;
+  parentTask?: { _id: string; title: string } | string | null;
+  source?: 'user' | 'assistant';
   quadrant: 1 | 2 | 3 | 4;
   status: 'Not Started' | 'Started' | 'Completed' | 'Cancelled';
   priority: number;
@@ -179,3 +187,65 @@ export const QuadrantColors = {
   3: '#ffc107', // Yellow
   4: '#6c757d'  // Gray
 } as const;
+
+// ---- AI assistant
+export interface AssistantActionSummary {
+  id: string;
+  summary: string;
+  undone: boolean;
+  tool?: string;
+}
+
+export interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+  actions: AssistantActionSummary[];
+  pending?: boolean;
+  error?: boolean;
+}
+
+export interface AssistantConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: string;
+}
+
+export interface AssistantNextSuggestion {
+  source: 'queue' | 'plan';
+  reason: string;
+  itemType: 'task' | 'activity';
+  id: string;
+  title: string;
+  minutes?: number;
+  startsAt?: string | null;
+  startsAtLocal?: string | null;
+  project?: string;
+  autoStart?: boolean;
+}
+
+export interface AssistantLiveState {
+  active: {
+    id: string;
+    title: string;
+    startTime: string;
+    plannedEnd?: string;
+    plannedEndLocal?: string | null;
+    autoStop: boolean;
+  } | null;
+  queue: Array<{ id: string; title: string; minutes: number; status: string }>;
+  next: AssistantNextSuggestion | null;
+}
+
+export interface AssistantSettings {
+  timezone: string;
+  workdayStart: string;
+  workdayEnd: string;
+  lunchTime: string;
+  lunchDuration: number;
+  lunchActivity?: string | null;
+  bufferMinutes: number;
+  defaultTaskMinutes: number;
+  customInstructions: string;
+}

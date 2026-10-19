@@ -95,6 +95,7 @@ export default function TaskManager() {
     tags: '',
     dueDate: null as dayjs.Dayjs | null,
     scheduleTime: '',
+    parentTask: '',
   });
   const isScheduleTimeValid = !formData.scheduleTime || SCHEDULE_TIME_PATTERN.test(formData.scheduleTime);
 
@@ -217,6 +218,7 @@ export default function TaskManager() {
       tags: '',
       dueDate: null,
       scheduleTime: '',
+      parentTask: '',
     });
   };
 
@@ -234,6 +236,7 @@ export default function TaskManager() {
         tags: task.tags.join(', '),
         dueDate: task.dueDate ? dayjs(task.dueDate) : null,
         scheduleTime: task.scheduleTime || '',
+        parentTask: (typeof task.parentTask === 'string' ? task.parentTask : task.parentTask?._id) || '',
       });
     } else {
       setEditingTask(null);
@@ -257,6 +260,7 @@ export default function TaskManager() {
       tags: formData.tags.split(',').map(tag => tag.trim()).filter(tag => tag),
       dueDate: formData.dueDate ? formData.dueDate.toISOString() : null,
       scheduleTime: formData.scheduleTime || null,
+      parentTask: formData.parentTask || null,
     } as any;
 
     if (editingTask) {
@@ -896,7 +900,7 @@ export default function TaskManager() {
                 <Select
                   value={formData.project}
                   label="Project"
-                  onChange={(e) => setFormData({ ...formData, project: e.target.value })}
+                  onChange={(e) => setFormData({ ...formData, project: e.target.value, parentTask: '' })}
                 >
                   {projects.filter(p => p.status === 'active' && !p.isArchived).map((project) => (
                     <MenuItem key={project._id} value={project._id}>
@@ -913,6 +917,28 @@ export default function TaskManager() {
                       </Box>
                     </MenuItem>
                   ))}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth disabled={!formData.project}>
+                <InputLabel>Tarea padre (opcional)</InputLabel>
+                <Select
+                  value={formData.parentTask}
+                  label="Tarea padre (opcional)"
+                  onChange={(e) => setFormData({ ...formData, parentTask: e.target.value })}
+                >
+                  <MenuItem value="">— Ninguna (tarea principal) —</MenuItem>
+                  {allTasks
+                    .filter((t) => (t.project?._id || (t.project as any)) === formData.project)
+                    .filter((t) => t._id !== editingTask?._id)
+                    .filter((t) => !['Completed', 'Cancelled'].includes(t.status) || t._id === formData.parentTask)
+                    .map((t) => (
+                      <MenuItem key={t._id} value={t._id}>
+                        {t.title}
+                      </MenuItem>
+                    ))}
                 </Select>
               </FormControl>
             </Grid>

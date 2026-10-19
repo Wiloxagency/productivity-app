@@ -44,6 +44,24 @@ const timeEntrySchema = new mongoose.Schema({
   isActive: {
     type: Boolean,
     default: true // true when timer is running, false when stopped
+  },
+  // Planned end of the entry. Only enforced when autoStop is true.
+  plannedEnd: {
+    type: Date
+  },
+  // Close automatically at plannedEnd (activity flag or assistant sequence)
+  autoStop: {
+    type: Boolean,
+    default: false
+  },
+  // Groups entries started by the same assistant sequence (swim -> gym -> walk)
+  sequenceId: {
+    type: String
+  },
+  source: {
+    type: String,
+    enum: ['user', 'assistant', 'auto'],
+    default: 'user'
   }
 }, {
   timestamps: true
@@ -68,5 +86,7 @@ timeEntrySchema.pre('save', function(next) {
   }
   next();
 });
+
+timeEntrySchema.index({ isActive: 1, autoStop: 1, plannedEnd: 1 });
 
 module.exports = mongoose.model('TimeEntry', timeEntrySchema);

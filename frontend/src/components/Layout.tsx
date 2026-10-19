@@ -26,6 +26,7 @@ import {
   BoltRounded as BrandIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
+import AssistantPanel from './Assistant/AssistantPanel';
 
 const drawerWidth = 240;
 const collapsedDrawerWidth = 64;
@@ -266,6 +267,7 @@ export default function Layout({ children }: LayoutProps) {
         <Toolbar />
         {children}
       </Box>
+      <AssistantPanel />
     </Box>
   );
 }

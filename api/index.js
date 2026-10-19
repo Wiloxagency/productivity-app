@@ -12,7 +12,15 @@ app.use(express.json());
 
 // Database connection
 mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB Atlas'))
+  .then(() => {
+    console.log('Connected to MongoDB Atlas');
+    // Background ticker: auto-close entries (activity autoStop / assistant
+    // sequences) and start the next queued item, even with the UI closed.
+    const { enforceAutoStops } = require('./services/timeline');
+    const tick = () => enforceAutoStops().catch((err) => console.error('Auto-stop ticker:', err.message));
+    tick();
+    setInterval(tick, 20 * 1000);
+  })
   .catch(err => console.error('MongoDB connection error:', err));
 
 // Routes
@@ -29,6 +37,7 @@ const planningRoutes = require('./routes/planning');
 const projectRoutes = require('./routes/projects');
 const deadlineRoutes = require('./routes/deadlines');
 const defaultSelectionsRoutes = require('./routes/default-selections');
+const assistantRoutes = require('./routes/assistant');
 
 // Use routes
 app.use('/api/activities', activityRoutes);
@@ -39,6 +48,7 @@ app.use('/api/planning', planningRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/deadlines', deadlineRoutes);
 app.use('/api/default-selections', defaultSelectionsRoutes);
+app.use('/api/assistant', assistantRoutes);
 
 // Error handling middleware
 app.use((err, req, res, next) => {

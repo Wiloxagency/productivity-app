@@ -260,6 +260,18 @@ export default function TaskCard({
                   }}
                 />
               )}
+              {task.parentTask && typeof task.parentTask === 'object' && (
+                <Chip
+                  label={`↳ ${task.parentTask.title}`}
+                  size="small"
+                  variant="outlined"
+                  sx={{
+                    fontSize: '0.7rem',
+                    height: compact ? '20px' : '24px',
+                    maxWidth: 180,
+                  }}
+                />
+              )}
               <Chip
                 label={formatTime(task.estimatedTime)}
                 size="small"

@@ -25,6 +25,8 @@ import {
   TableRow,
   Paper,
   Alert,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -49,6 +51,8 @@ export default function ActivityManager() {
     estimatedDuration: 25,
     color: '#1976d2',
     scheduleTime: '',
+    autoStop: false,
+    aliases: '',
   });
   const isScheduleTimeValid = !formData.scheduleTime || SCHEDULE_TIME_PATTERN.test(formData.scheduleTime);
 
@@ -103,6 +107,8 @@ export default function ActivityManager() {
       estimatedDuration: 25,
       color: '#1976d2',
       scheduleTime: '',
+      autoStop: false,
+      aliases: '',
     });
   };
 
@@ -117,6 +123,8 @@ export default function ActivityManager() {
         estimatedDuration: activity.estimatedDuration,
         color: activity.color,
         scheduleTime: activity.scheduleTime || '',
+        autoStop: !!activity.autoStop,
+        aliases: (activity.aliases || []).join(', '),
       });
     } else {
       setEditingActivity(null);
@@ -137,6 +145,8 @@ export default function ActivityManager() {
       estimatedDuration: formData.estimatedDuration,
       color: formData.color,
       scheduleTime: formData.scheduleTime || null,
+      autoStop: formData.autoStop,
+      aliases: formData.aliases.split(',').map((alias) => alias.trim()).filter(Boolean),
     } as any;
 
     if (editingActivity) {
@@ -273,9 +283,12 @@ export default function ActivityManager() {
                         />
                       </TableCell>
                       <TableCell>
-                        <Typography variant="body2">
+                        <Typography variant="body2" component="span">
                           {formatTime(activity.estimatedDuration)}
                         </Typography>
+                        {activity.autoStop && (
+                          <Chip label="auto-cierre" size="small" variant="outlined" color="success" sx={{ ml: 1, height: 20 }} />
+                        )}
                       </TableCell>
                       <TableCell>
                         <Box sx={{ display: 'flex', gap: 1 }}>
@@ -413,6 +426,32 @@ export default function ActivityManager() {
               />
             </Grid>
             
+            <Grid item xs={12} sm={6}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={formData.autoStop}
+                    onChange={(e) => setFormData({ ...formData, autoStop: e.target.checked })}
+                  />
+                }
+                label="Auto-cierre al cumplir la duración"
+              />
+              <Typography variant="caption" color="text.secondary" display="block">
+                Ej.: Natación 60 min se cierra sola aunque olvides detenerla. Déjalo apagado en trabajo.
+              </Typography>
+            </Grid>
+
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Alias para el asistente (opcional)"
+                value={formData.aliases}
+                onChange={(e) => setFormData({ ...formData, aliases: e.target.value })}
+                placeholder="nadar, natación, piscina"
+                helperText="Separados por coma"
+              />
+            </Grid>
+
             <Grid item xs={12}>
               <TextField
                 fullWidth

@@ -45,7 +45,16 @@ const activitySchema = new mongoose.Schema({
   scheduleTime: {
     type: String, // HH:mm format
     trim: true
-  }
+  },
+  // When true, a running entry of this activity is closed automatically once
+  // estimatedDuration is reached (e.g. Swimming = 60 min). Work activities
+  // keep the default (false) so the tracker runs until a manual action.
+  autoStop: {
+    type: Boolean,
+    default: false
+  },
+  // Alternative names the assistant can match ("natación", "nadar", "swim")
+  aliases: [String]
 }, {
   timestamps: true
 });

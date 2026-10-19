@@ -22,6 +22,7 @@ router.get('/', async (req, res) => {
     const tasks = await Task.find(filter)
       .populate('category', 'name color')
       .populate('project', 'name color')
+      .populate('parentTask', 'title')
       .populate('relatedTimeEntries')
       .sort({ priority: 1, createdAt: 1 });
     
@@ -39,6 +40,7 @@ router.get('/backlog', async (req, res) => {
     })
       .populate('category', 'name color')
       .populate('project', 'name color')
+      .populate('parentTask', 'title')
       .sort({ priority: 1, createdAt: 1 });
     
     res.json(tasks);
@@ -59,6 +61,7 @@ router.get('/daily/:date', async (req, res) => {
       plannedDate: { $gte: startDate, $lt: endDate }
     }).populate('category', 'name color')
       .populate('project', 'name color')
+      .populate('parentTask', 'title')
       .populate('relatedTimeEntries')
       .sort({ priority: 1 });
     
@@ -72,10 +75,12 @@ router.get('/daily/:date', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const normalizedTaskBody = normalizeTaskDeadlinePayload({ ...req.body });
+    if (normalizedTaskBody.parentTask === '') normalizedTaskBody.parentTask = null;
     const task = new Task(normalizedTaskBody);
     await task.save();
     await task.populate('category', 'name color');
     await task.populate('project', 'name color');
+    await task.populate('parentTask', 'title');
     res.status(201).json(task);
   } catch (error) {
     res.status(400).json({ error: error.message });
@@ -98,6 +103,7 @@ router.put('/reorder', async (req, res) => {
       status: { $in: ['Not Started', 'Started'] }
     }).populate('category', 'name color')
       .populate('project', 'name color')
+      .populate('parentTask', 'title')
       .sort({ priority: 1 });
     
     res.json(reorderedTasks);
@@ -110,6 +116,10 @@ router.put('/reorder', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const updateData = normalizeTaskDeadlinePayload({ ...req.body });
+    if (updateData.parentTask === '' ) updateData.parentTask = null;
+    if (updateData.parentTask && String(updateData.parentTask) === String(req.params.id)) {
+      return res.status(400).json({ error: 'A task cannot be its own parent' });
+    }
 
     if (updateData.status === 'Completed' && !updateData.completedAt) {
       updateData.completedAt = new Date();
@@ -120,7 +130,8 @@ router.put('/:id', async (req, res) => {
       updateData,
       { new: true, runValidators: true }
     ).populate('category', 'name color')
-     .populate('project', 'name color');
+     .populate('project', 'name color')
+     .populate('parentTask', 'title');
     
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
@@ -152,7 +163,8 @@ router.put('/:id/plan', async (req, res) => {
       },
       { new: true, runValidators: true }
     ).populate('category', 'name color')
-     .populate('project', 'name color');
+     .populate('project', 'name color')
+     .populate('parentTask', 'title');
     
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });

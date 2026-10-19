@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const TimeEntry = require('../models/TimeEntry');
+const Activity = require('../models/Activity');
+const { enforceAutoStops } = require('../services/timeline');
 const POMODORO_WORK_DURATION_MINUTES = 60;
 const POMODORO_BREAK_DURATION_MINUTES = 10;
 
@@ -48,6 +50,14 @@ router.get('/', async (req, res) => {
 // GET active time entry
 router.get('/active', async (req, res) => {
   try {
+    // Close entries whose activity has auto-close enabled (and start the next
+    // item of an assistant sequence) before answering.
+    try {
+      await enforceAutoStops();
+    } catch (autoStopError) {
+      console.error('enforceAutoStops failed:', autoStopError.message);
+    }
+
     const activeEntry = await TimeEntry.findOne({ isActive: true })
       .populate('activity', 'name color quadrant')
       .populate({
@@ -124,6 +134,16 @@ router.post('/start', async (req, res) => {
       startTime: new Date(),
       isActive: true
     });
+
+    // Activities flagged with autoStop (e.g. Swimming 60 min) close themselves
+    // once their default duration is reached.
+    if (timeEntry.activity) {
+      const activityDoc = await Activity.findById(timeEntry.activity).select('autoStop estimatedDuration');
+      if (activityDoc && activityDoc.autoStop && activityDoc.estimatedDuration > 0) {
+        timeEntry.autoStop = true;
+        timeEntry.plannedEnd = new Date(timeEntry.startTime.getTime() + activityDoc.estimatedDuration * 60000);
+      }
+    }
     
     await timeEntry.save();
     await timeEntry.populate('activity', 'name color quadrant');

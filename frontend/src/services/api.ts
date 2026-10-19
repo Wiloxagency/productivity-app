@@ -8,7 +8,11 @@ import {
   Task, 
   DailyPlanning, 
   ProductivityReport, 
-  DailySummary 
+  DailySummary,
+  AssistantConversationSummary,
+  AssistantMessage,
+  AssistantLiveState,
+  AssistantSettings,
 } from '../types';
 
 const api = axios.create({
@@ -120,6 +124,21 @@ export const defaultSelectionsApi = {
   save: (payload: { selectedTasks: Array<{ task: string; plannedDuration: number }>; selectedActivities: Array<{ activity: string; plannedDuration: number }> }) => 
     api.post('/default-selections', payload).then(res => res.data),
   delete: () => api.delete('/default-selections').then(res => res.data),
+};
+
+// AI assistant API
+export const assistantApi = {
+  status: () => api.get<{ configured: boolean; model: string }>('/assistant/status').then(res => res.data),
+  chat: (data: { conversationId?: string | null; message: string }) =>
+    api.post<{ conversationId: string; title: string; message: AssistantMessage; model: string }>('/assistant/chat', data, { timeout: 125000 })
+      .then(res => res.data),
+  conversations: () => api.get<AssistantConversationSummary[]>('/assistant/conversations').then(res => res.data),
+  conversation: (id: string) =>
+    api.get<{ id: string; title: string; messages: AssistantMessage[] }>(`/assistant/conversations/${id}`).then(res => res.data),
+  undo: (actionId: string) => api.post<{ id: string; undone: boolean }>(`/assistant/actions/${actionId}/undo`).then(res => res.data),
+  live: () => api.get<AssistantLiveState>('/assistant/next').then(res => res.data),
+  getSettings: () => api.get<AssistantSettings>('/assistant/settings').then(res => res.data),
+  updateSettings: (data: Partial<AssistantSettings>) => api.put<AssistantSettings>('/assistant/settings', data).then(res => res.data),
 };
 
 export default api;

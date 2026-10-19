@@ -20,6 +20,12 @@ const taskSchema = new mongoose.Schema({
     ref: 'Project',
     required: true
   },
+  // Optional parent task: Project -> Task -> Subtask
+  parentTask: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Task',
+    default: null
+  },
   quadrant: {
     type: Number,
     required: true,
@@ -60,7 +66,13 @@ const taskSchema = new mongoose.Schema({
     type: String, // HH:mm format
     trim: true
   },
-  tags: [String]
+  tags: [String],
+  // Who created the task ('user' from the UI, 'assistant' from the AI chat)
+  source: {
+    type: String,
+    enum: ['user', 'assistant'],
+    default: 'user'
+  }
 }, {
   timestamps: true
 });
@@ -72,5 +84,7 @@ taskSchema.methods.calculateActualTime = async function() {
   this.actualTime = timeEntries.reduce((total, entry) => total + entry.duration, 0);
   return this.actualTime;
 };
+
+taskSchema.index({ parentTask: 1 });
 
 module.exports = mongoose.model('Task', taskSchema);
