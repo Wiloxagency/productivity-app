@@ -1165,7 +1165,7 @@ export default function DailyPlanning() {
                                 <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
                                   {item.plannedStartTime && (
                                     <Typography variant="body2" color="text.secondary">
-                                      🕐 {formatTimeSlot(new Date(item.plannedStartTime))}
+                                      🕐 {formatTimeSlot(new Date(item.plannedStartTime))}–{formatTimeSlot(dayjs(item.plannedStartTime).add(targetDuration || 0, 'minute').toDate())}
                                     </Typography>
                                   )}
                                   <Typography variant="body2" color="text.secondary">

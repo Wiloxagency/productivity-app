@@ -47,7 +47,26 @@ const trackedMinutes = async (bucket, now) => {
   return { map, entries };
 };
 
-const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, now = new Date() } = {}) => {
+// Renumber priorities by planned start time so every view (Daily Planning,
+// Time Tracker queue) shows the day in chronological order.
+const normalizePlanningOrder = (doc) => {
+  const time = (x) => (x.plannedStartTime ? new Date(x.plannedStartTime).getTime() : Infinity);
+  const all = [...doc.plannedTasks, ...doc.plannedActivities]
+    .map((item, index) => ({ item, index, prio: typeof item.priority === 'number' ? item.priority : 999 }))
+    .sort((a, b) => (time(a.item) - time(b.item)) || (a.prio - b.prio) || (a.index - b.index));
+  all.forEach(({ item }, i) => { item.priority = i + 1; });
+  doc.plannedTasks.sort((a, b) => a.priority - b.priority);
+  doc.plannedActivities.sort((a, b) => a.priority - b.priority);
+  doc.productivity.planned.totalTasks = doc.plannedTasks.length + doc.plannedActivities.length;
+  doc.productivity.planned.totalTime = doc.plannedTasks.reduce((s, pt) => s + (pt.plannedDuration || 0), 0)
+    + doc.plannedActivities.reduce((s, pa) => s + (pa.plannedDuration || 0), 0);
+  return doc;
+};
+
+// includeBacklog=false (default): only what is already planned for the day,
+// tasks dated that day and the ids in includeTaskIds. Other backlog tasks are
+// returned as `suggestions` so the user chooses (never dump the whole backlog).
+const buildDayPlan = async ({ date, apply = false, includeBacklog = false, includeTaskIds = [], rec, now = new Date() } = {}) => {
   const settings = await AssistantSettings.getSingleton();
   const tz = settings.timezone;
   const today = localDateStr(now, tz);
@@ -93,7 +112,10 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
       key: k, itemType: 'task', id: String(task._id), title: task.title, project: task.project?.name,
       quadrant: task.quadrant, priority: pt.priority ?? task.priority, minutes: remaining, prevStart: pt.plannedStartTime
     };
-    if (task.scheduleTime) {
+    if (pt.fixedTime && pt.plannedStartTime) {
+      const start = new Date(pt.plannedStartTime);
+      pushHard({ ...base, kind: 'fixed', start, end: addMinutes(start, remaining) });
+    } else if (task.scheduleTime) {
       const start = zonedToUtc(ymd, task.scheduleTime, tz);
       pushHard({ ...base, kind: 'fixed', start, end: addMinutes(start, remaining) });
     } else {
@@ -117,7 +139,10 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
       key: k, itemType: 'activity', id: String(activity._id), title: activity.name,
       quadrant: activity.quadrant, priority: pa.priority, minutes: remaining, prevStart: pa.plannedStartTime
     };
-    if (activity.scheduleTime) {
+    if (pa.fixedTime && pa.plannedStartTime) {
+      const start = new Date(pa.plannedStartTime);
+      pushHard({ ...base, kind: 'fixed', start, end: addMinutes(start, remaining) });
+    } else if (activity.scheduleTime) {
       const start = zonedToUtc(ymd, activity.scheduleTime, tz);
       pushHard({ ...base, kind: 'fixed', start, end: addMinutes(start, remaining) });
     } else {
@@ -147,7 +172,9 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
   }
 
   // Backlog candidates
-  if (includeBacklog) {
+  const suggestions = [];
+  const wanted = new Set((includeTaskIds || []).map(String));
+  {
     const backlog = await Task.find({ status: { $in: ['Not Started', 'Started'] } })
       .populate('project', 'name')
       .sort({ priority: 1, createdAt: 1 });
@@ -164,6 +191,10 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
         key: k, itemType: 'task', id: String(task._id), title: task.title, project: task.project?.name,
         quadrant: task.quadrant, priority: task.priority, minutes: remaining, dueDate: task.dueDate, fromBacklog: true
       };
+      if (!(includeBacklog || wanted.has(String(task._id)) || planned === ymd)) {
+        suggestions.push({ ...base, kind: 'suggestion' });
+        return;
+      }
       if (task.scheduleTime && planned === ymd) {
         const start = zonedToUtc(ymd, task.scheduleTime, tz);
         pushHard({ ...base, kind: 'fixed', start, end: addMinutes(start, remaining) });
@@ -254,10 +285,7 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
         }
       }
     }
-    const totalTime = doc.plannedTasks.reduce((s, pt) => s + (pt.plannedDuration || 0), 0)
-      + doc.plannedActivities.reduce((s, pa) => s + (pa.plannedDuration || 0), 0);
-    doc.productivity.planned.totalTasks = doc.plannedTasks.length + doc.plannedActivities.length;
-    doc.productivity.planned.totalTime = totalTime;
+    normalizePlanningOrder(doc);
     await doc.save();
   }
 
@@ -282,6 +310,14 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = true, rec, n
     timeline: timeline.map(fmt),
     unscheduled: unscheduled.map(fmt),
     missed: missed.map(fmt),
+    suggestions: suggestions
+      .sort((a, b) => {
+        const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+        const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+        return (aDue - bDue) || ((a.quadrant || 4) - (b.quadrant || 4)) || ((a.priority || 99) - (b.priority || 99));
+      })
+      .slice(0, 12)
+      .map((i) => ({ id: i.id, title: i.title, project: i.project, minutes: i.minutes, quadrant: i.quadrant, dueDate: i.dueDate ? localDateStr(i.dueDate, 'UTC') : undefined })),
     freeMinutes,
     applied: !!apply
   };
@@ -340,4 +376,4 @@ const getNextSuggestion = async ({ now = new Date() } = {}) => {
   return null;
 };
 
-module.exports = { buildDayPlan, getNextSuggestion, findLunchActivity };
+module.exports = { buildDayPlan, getNextSuggestion, findLunchActivity, normalizePlanningOrder, loadPlanning };

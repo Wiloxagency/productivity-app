@@ -13,7 +13,7 @@ const {
   isValidTimeZone, zonedToUtc, localDateStr, localTimeStr, localDateTimeStr, addDaysStr, dayBucket, parseHHmm, addMinutes
 } = require('../../utils/time');
 const timeline = require('../timeline');
-const { buildDayPlan, getNextSuggestion } = require('../dayPlanner');
+const { buildDayPlan, getNextSuggestion, normalizePlanningOrder } = require('../dayPlanner');
 
 // ---------------------------------------------------------------- helpers
 const fail = (message, extra = {}) => ({ status: 'error', message, ...extra });
@@ -116,21 +116,40 @@ const addTaskToPlanning = async (ymd, task, { start, minutes }, rec) => {
   }
   const existing = planning.plannedTasks.find((pt) => String(pt.task) === String(task._id));
   if (existing) {
-    if (start) existing.plannedStartTime = start;
+    if (start) {
+      existing.plannedStartTime = start;
+      existing.fixedTime = true;
+    }
     if (minutes) existing.plannedDuration = minutes;
   } else {
     planning.plannedTasks.push({
       task: task._id,
       plannedStartTime: start,
+      fixedTime: !!start,
       plannedDuration: minutes,
       priority: planning.plannedTasks.length + planning.plannedActivities.length + 1
     });
   }
-  // keep the list ordered by start time (items without time go last)
-  planning.plannedTasks.sort((a, b) => (a.plannedStartTime ? new Date(a.plannedStartTime).getTime() : Infinity)
-    - (b.plannedStartTime ? new Date(b.plannedStartTime).getTime() : Infinity));
-  recomputePlannedTotals(planning);
+  normalizePlanningOrder(planning); // chronological order + totals
   await planning.save();
+};
+
+// Mark a task/activity as completed in every day plan that still has it open
+const completeInPlannings = async (itemType, id, rec, actualMinutes = 0) => {
+  const field = itemType === 'task' ? 'plannedTasks' : 'plannedActivities';
+  const ref = itemType === 'task' ? 'task' : 'activity';
+  const plannings = await DailyPlanning.find({ [`${field}.${ref}`]: id });
+  let count = 0;
+  for (const planning of plannings) {
+    const item = planning[field].find((x) => String(x[ref]) === String(id) && !x.completed);
+    if (!item) continue;
+    rec.before(planning);
+    item.completed = true;
+    if (actualMinutes) item.actualDuration = (item.actualDuration || 0) + actualMinutes;
+    await planning.save();
+    count += 1;
+  }
+  return count;
 };
 
 const markPlanningCompleted = async (entry, tz, rec) => {
@@ -183,8 +202,8 @@ const obj = (properties, required = []) => ({ type: 'object', properties, requir
 
 module.exports = {
   fail, taskView, activityView, entryView, resolveWhen, findCategory, addTaskToPlanning, markPlanningCompleted,
-  backlogPriority, findEntryByName, TOOLS, EXECUTORS, define, str, num, bool, obj,
+  backlogPriority, findEntryByName, completeInPlannings, TOOLS, EXECUTORS, define, str, num, bool, obj,
   // re-exports used by the tool files
   crypto, Project, Task, Activity, TimeEntry, QueueItem, rankBySimilarity, zonedToUtc, localDateStr, localTimeStr,
-  localDateTimeStr, dayBucket, addMinutes, timeline, buildDayPlan, getNextSuggestion
+  localDateTimeStr, dayBucket, addMinutes, timeline, buildDayPlan, getNextSuggestion, normalizePlanningOrder, DailyPlanning
 };

@@ -1,9 +1,11 @@
 // Time tracking / sequence / planning tools
 const k = require('./toolkit');
+const AssistantSettings = require('../../models/AssistantSettings');
+const { findLunchActivity } = require('../dayPlanner');
 const {
   define, str, num, bool, obj, fail, entryView, resolveWhen, markPlanningCompleted, findEntryByName,
   crypto, Task, Activity, TimeEntry, QueueItem, rankBySimilarity, zonedToUtc, localDateStr, localTimeStr,
-  localDateTimeStr, dayBucket, addMinutes, timeline, buildDayPlan, getNextSuggestion
+  localDateTimeStr, dayBucket, addMinutes, timeline, buildDayPlan, getNextSuggestion, normalizePlanningOrder, DailyPlanning
 } = k;
 
 const populated = (id) => TimeEntry.findById(id).populate('activity', 'name').populate('task', 'title');
@@ -220,14 +222,22 @@ define('adjust_entry_time',
   });
 
 define('plan_day',
-  'Arma el plan del día: bloques fijos (reuniones con hora, almuerzo), luego tareas por urgencia/prioridad en los huecos libres del horario. apply=true lo guarda en Daily Planning.',
+  'Ordena el día con horas de inicio/fin: bloques fijos (reuniones con hora, almuerzo) y luego las tareas en los huecos libres del horario. Usa SOLO lo ya planificado para ese día, las tareas fechadas ese día y las de includeTaskIds. NO mete el backlog salvo includeBacklog=true. Devuelve `suggestions` del backlog para que el usuario elija. apply=true guarda horas y orden.',
   obj({
     date: str('Fecha YYYY-MM-DD (por defecto hoy)'),
     apply: bool('Guardar el plan (true) o solo proponerlo (false)'),
-    includeBacklog: bool('Rellenar huecos con tareas del backlog (por defecto true)')
+    includeTaskIds: { type: 'array', items: { type: 'string' }, description: 'Ids de tareas del backlog que el usuario pidió agregar a ese día' },
+    includeBacklog: bool('Rellenar huecos con TODO el backlog. Solo si el usuario lo pide explícitamente.')
   }),
   async (args, ctx) => {
-    const plan = await buildDayPlan({ date: args.date, apply: !!args.apply, includeBacklog: args.includeBacklog !== false, rec: ctx.rec, now: ctx.now });
+    const plan = await buildDayPlan({
+      date: args.date,
+      apply: !!args.apply,
+      includeBacklog: !!args.includeBacklog,
+      includeTaskIds: args.includeTaskIds || [],
+      rec: ctx.rec,
+      now: ctx.now
+    });
     const compact = {
       status: plan.applied ? 'applied' : 'proposal',
       date: plan.date,
@@ -236,10 +246,157 @@ define('plan_day',
       unscheduled: plan.unscheduled.slice(0, 10).map((i) => `${i.title} (${i.minutes} min)`),
       unscheduledCount: plan.unscheduled.length,
       missed: plan.missed.map((i) => `${i.startLocal} ${i.title}`),
+      suggestions: plan.suggestions.map((t) => ({ id: t.id, title: t.title, project: t.project, minutes: t.minutes, due: t.dueDate })),
       freeMinutes: plan.freeMinutes
     };
-    if (plan.applied) compact.summary = `Plan del ${plan.date}: ${plan.timeline.length} bloques`;
+    if (plan.applied) compact.summary = `Plan del ${plan.date} ordenado: ${plan.timeline.length} bloques`;
     return compact;
+  });
+
+const planItemsView = async (ymd, ctx) => {
+  const planning = await DailyPlanning.findOne({ date: dayBucket(ymd) })
+    .populate({ path: 'plannedTasks.task', select: 'title status estimatedTime project', populate: { path: 'project', select: 'name' } })
+    .populate('plannedActivities.activity', 'name estimatedDuration');
+  if (!planning) return [];
+  const items = [
+    ...planning.plannedTasks.filter((pt) => pt.task).map((pt) => ({
+      itemType: 'task', id: String(pt.task._id), title: pt.task.title, project: pt.task.project?.name,
+      minutes: pt.plannedDuration || pt.task.estimatedTime, start: pt.plannedStartTime, priority: pt.priority,
+      completed: pt.completed || pt.task.status === 'Completed'
+    })),
+    ...planning.plannedActivities.filter((pa) => pa.activity).map((pa) => ({
+      itemType: 'activity', id: String(pa.activity._id), title: pa.activity.name,
+      minutes: pa.plannedDuration || pa.activity.estimatedDuration, start: pa.plannedStartTime, priority: pa.priority,
+      completed: pa.completed
+    }))
+  ].sort((a, b) => (a.priority || 999) - (b.priority || 999));
+  return items.map((i) => ({
+    ...i,
+    start: undefined,
+    startLocal: i.start ? localTimeStr(i.start, ctx.tz) : null,
+    endLocal: i.start ? localTimeStr(addMinutes(i.start, i.minutes || 0), ctx.tz) : null
+  }));
+};
+
+define('get_day_plan',
+  'Lee el plan guardado de un día (lo que el usuario ve en Daily Planning), en orden, con hora inicio–fin y si está completado. Úsalo para verificar después de cada cambio y para saber cuál es "la primera tarea".',
+  obj({ date: str('YYYY-MM-DD, por defecto hoy') }),
+  async (args, ctx) => {
+    const ymd = args.date || localDateStr(ctx.now, ctx.tz);
+    const items = await planItemsView(ymd, ctx);
+    return {
+      status: 'ok',
+      date: ymd,
+      items: items.map((i) => ({
+        itemType: i.itemType,
+        id: i.id,
+        line: `${i.startLocal ? `${i.startLocal}–${i.endLocal}` : 'sin hora'} ${i.title}${i.project ? ` [${i.project}]` : ''} · ${i.minutes} min${i.completed ? ' ✓ completada' : ''}`
+      }))
+    };
+  });
+
+define('remove_from_plan',
+  'Quita elementos del plan de un día (no borra las tareas: vuelven al backlog sin fecha). Usa `items` para quitar unos concretos o `keepOnly` para dejar solo los indicados ("quita las que no te dije").',
+  obj({
+    date: str('YYYY-MM-DD, por defecto hoy'),
+    items: { type: 'array', items: obj({ itemType: { type: 'string', enum: ['task', 'activity'] }, id: str('Id') }, ['itemType', 'id']) },
+    keepOnly: { type: 'array', items: obj({ itemType: { type: 'string', enum: ['task', 'activity'] }, id: str('Id') }, ['itemType', 'id']) }
+  }),
+  async (args, ctx) => {
+    const ymd = args.date || localDateStr(ctx.now, ctx.tz);
+    const bucket = dayBucket(ymd);
+    const planning = await DailyPlanning.findOne({ date: bucket });
+    if (!planning) return fail(`No hay plan para ${ymd}`);
+    if (!args.items?.length && !args.keepOnly) return fail('Indica items o keepOnly');
+    const keyOf = (t, id) => `${t}:${id}`;
+    const removeSet = new Set((args.items || []).map((i) => keyOf(i.itemType, i.id)));
+    const keepSet = args.keepOnly ? new Set(args.keepOnly.map((i) => keyOf(i.itemType, i.id))) : null;
+    const lunch = await findLunchActivity(await AssistantSettings.getSingleton());
+    const lunchId = lunch ? String(lunch._id) : null;
+    // keepOnly never drops lunch (only removed when named explicitly in items)
+    const shouldRemove = (t, id) => (keepSet
+      ? !keepSet.has(keyOf(t, String(id))) && !(t === 'activity' && String(id) === lunchId)
+      : removeSet.has(keyOf(t, String(id))));
+
+    ctx.rec.before(planning);
+    const removedTasks = planning.plannedTasks.filter((pt) => !pt.completed && shouldRemove('task', pt.task));
+    const removedActs = planning.plannedActivities.filter((pa) => !pa.completed && shouldRemove('activity', pa.activity));
+    planning.plannedTasks = planning.plannedTasks.filter((pt) => !removedTasks.includes(pt));
+    planning.plannedActivities = planning.plannedActivities.filter((pa) => !removedActs.includes(pa));
+    normalizePlanningOrder(planning);
+    await planning.save();
+
+    const titles = [];
+    for (const pt of removedTasks) {
+      const task = await Task.findById(pt.task);
+      if (!task) continue;
+      titles.push(task.title);
+      if (task.plannedDate && task.plannedDate.getTime() === bucket.getTime()) {
+        ctx.rec.before(task);
+        task.plannedDate = undefined;
+        if (task.dueDate && task.dueDate.getTime() === bucket.getTime() && task.source === 'assistant') task.dueDate = undefined;
+        await task.save();
+      }
+    }
+    for (const pa of removedActs) {
+      const a = await Activity.findById(pa.activity);
+      if (a) titles.push(a.name);
+    }
+    return {
+      status: 'ok',
+      removed: titles,
+      remaining: (await planItemsView(ymd, ctx)).length,
+      summary: titles.length ? `Quitadas del ${ymd}: ${titles.join(', ')}` : undefined
+    };
+  });
+
+define('set_plan_item',
+  'Agrega o ajusta un elemento en el plan de un día con hora de inicio y/o duración ("pon X a las 15:00", "dale 90 minutos a Y"). Reordena el día por hora.',
+  obj({
+    date: str('YYYY-MM-DD, por defecto hoy'),
+    itemType: { type: 'string', enum: ['task', 'activity'] },
+    id: str('Id de la tarea o actividad'),
+    startTime: str('Hora de inicio HH:mm (local)'),
+    minutes: num('Duración planificada')
+  }, ['itemType', 'id']),
+  async (args, ctx) => {
+    const ymd = args.date || localDateStr(ctx.now, ctx.tz);
+    const bucket = dayBucket(ymd);
+    const doc = args.itemType === 'task' ? await Task.findById(args.id).catch(() => null) : await Activity.findById(args.id).catch(() => null);
+    if (!doc) return fail('No encontrado');
+    let planning = await DailyPlanning.findOne({ date: bucket });
+    if (!planning) {
+      planning = new DailyPlanning({ date: bucket, plannedTasks: [], plannedActivities: [], goals: [] });
+      await planning.save();
+      ctx.rec.created(planning);
+    } else {
+      ctx.rec.before(planning);
+    }
+    const list = args.itemType === 'task' ? planning.plannedTasks : planning.plannedActivities;
+    const ref = args.itemType === 'task' ? 'task' : 'activity';
+    let item = list.find((x) => String(x[ref]) === String(doc._id));
+    if (!item) {
+      list.push({ [ref]: doc._id, plannedDuration: args.minutes || (args.itemType === 'task' ? doc.estimatedTime : doc.estimatedDuration) });
+      item = list[list.length - 1];
+      if (args.itemType === 'task' && !(doc.plannedDate && doc.plannedDate.getTime() === bucket.getTime())) {
+        ctx.rec.before(doc);
+        doc.plannedDate = bucket;
+        if (!doc.dueDate) doc.dueDate = bucket;
+        await doc.save();
+      }
+    }
+    if (args.startTime) {
+      item.plannedStartTime = zonedToUtc(ymd, args.startTime, ctx.tz);
+      item.fixedTime = true;
+    }
+    if (args.minutes) item.plannedDuration = Math.round(args.minutes);
+    normalizePlanningOrder(planning);
+    await planning.save();
+    const start = item.plannedStartTime ? localTimeStr(item.plannedStartTime, ctx.tz) : 'sin hora';
+    return {
+      status: 'ok',
+      summary: `${doc.title || doc.name}: ${start}${item.plannedStartTime ? `–${localTimeStr(addMinutes(item.plannedStartTime, item.plannedDuration || 0), ctx.tz)}` : ''} (${ymd})`
+    };
   });
 
 define('get_next_suggestion',

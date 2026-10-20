@@ -13,6 +13,9 @@ const dailyPlanningSchema = new mongoose.Schema({
       required: true
     },
     plannedStartTime: Date,
+    // true when the start time was set explicitly (user/assistant): the day
+    // planner keeps it fixed instead of re-flowing it
+    fixedTime: { type: Boolean, default: false },
     plannedDuration: Number, // in minutes
     actualDuration: Number, // in minutes
     completed: {
@@ -31,6 +34,9 @@ const dailyPlanningSchema = new mongoose.Schema({
       required: true
     },
     plannedStartTime: Date,
+    // true when the start time was set explicitly (user/assistant): the day
+    // planner keeps it fixed instead of re-flowing it
+    fixedTime: { type: Boolean, default: false },
     plannedDuration: Number, // in minutes
     actualDuration: Number, // in minutes
     completed: {

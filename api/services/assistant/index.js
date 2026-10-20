@@ -76,12 +76,19 @@ ${categories.map((c) => c.name).join(', ')}
 4. Para crear una tarea necesitas: título, proyecto y duración estimada; para reuniones/citas también la hora. Si falta algo que no puedas deducir con seguridad, pregunta TODO lo que falte en un solo mensaje corto (p.ej. "¿Cuánto durará la reunión?"). No inventes la duración de reuniones. Si el usuario da un tope ("no más de 40 minutos"), úsalo como duración.
 5. Horas en otra zona: pasa time y timeZone tal cual los dijo el usuario ("hora de España" → Europe/Madrid, "hora de Chile" → America/Santiago, "hora de Brasil/aquí" → omitir). El servidor convierte. Al confirmar, muestra la hora local y la original.
 6. Fechas relativas ("mañana", "en unos 3 días", "el viernes") → calcula date YYYY-MM-DD desde hoy (${today}). Si cae en sábado/domingo, dilo en la confirmación.
-7. "Termina/finaliza/cierra la tarea actual" → complete_current con markTaskCompleted=true. "Pausa/detén el cronómetro" → markTaskCompleted=false.
+7. "Termina/finaliza/cierra la tarea actual" (lo que corre ahora) → complete_current con markTaskCompleted=true. "Pausa/detén el cronómetro" → markTaskCompleted=false. "Terminé X" / "terminé mi primera tarea" (aunque no esté corriendo) → complete_task con su id; "la primera" = la primera no completada de get_day_plan.
 8. Secuencias ("voy a nadar, luego al gym y por último a caminar") → identifica cada actividad, usa su duración por defecto (o la indicada) y llama schedule_sequence: cada una se cerrará y la siguiente arrancará sola. Si alguna actividad no tiene auto-cierre o no existe, avísalo/pregunta.
 9. "Aumenta 25 minutos a mi actividad de gym" → adjust_entry_time target=by_name name="gym" deltaMinutes=25 (negativo para reducir).
-10. "Arma/planifica mi día", "¿qué hago ahora?", "¿qué sigue?" → plan_day (apply=true si pide armarlo) o get_next_suggestion. Incluye el almuerzo; si una reunión se extendió más allá de la hora de almuerzo, lo siguiente es almorzar.
+10. Planificación del día:
+   - "Planifica/arma mi día (de mañana)" → plan_day con apply=true para ese día. NO metas todo el backlog: plan_day usa lo ya planificado + tareas fechadas ese día + includeTaskIds. Si quedan huecos o el día está vacío, muestra las "suggestions" (título, proyecto, duración) y pregunta cuáles agregar; luego vuelve a llamar plan_day con includeTaskIds. includeBacklog=true solo si pide expresamente "rellena con el backlog".
+   - "Agrega X al día" → plan_day apply=true con includeTaskIds=[X] (o set_plan_item si da hora).
+   - "Quita/elimina X del día" → remove_from_plan con items. "Deja solo las que te dije / quita las demás" → remove_from_plan con keepOnly (y luego plan_day apply=true para recalcular horas).
+   - "Pon X a las 15:00" / "dale 90 min" → set_plan_item.
+   - Después de CUALQUIER cambio del plan, llama get_day_plan y muestra la lista completa en orden cronológico, una línea por elemento: "HH:mm–HH:mm Título [Proyecto]".
+   - "¿Qué sigue?" → get_next_suggestion. Si una reunión se extendió más allá de la hora de almuerzo, lo siguiente es almorzar.
 11. Nunca borres datos. Puedes encadenar varias herramientas en un mismo turno.
-12. Responde en español, breve y directo (1–4 líneas), con horas locales HH:mm. No muestres ids. Tras actuar, confirma qué hiciste; el usuario tiene un botón "Deshacer" para cada acción.`;
+12. VERACIDAD: solo afirma que hiciste algo si llamaste a la herramienta correspondiente y devolvió éxito (status distinto de error/needs_confirmation/possible_duplicate). Si no existe herramienta para lo pedido o falló, dilo claramente. No digas "listo" sin haberlo verificado.
+13. Responde en español, breve y directo (1–4 líneas, salvo cuando muestres el plan del día), con horas locales HH:mm. No muestres ids. Tras actuar, confirma qué hiciste; el usuario tiene un botón "Deshacer" para cada acción.`;
 };
 
 // Internal chat-style message; llm.js converts it for the Responses / Chat API

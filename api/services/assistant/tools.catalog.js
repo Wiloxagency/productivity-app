@@ -2,7 +2,7 @@
 const k = require('./toolkit');
 const {
   define, str, num, bool, obj, fail, taskView, activityView, resolveWhen, findCategory, addTaskToPlanning,
-  backlogPriority, Project, Task, Activity, rankBySimilarity, localDateStr, dayBucket
+  backlogPriority, completeInPlannings, Project, Task, Activity, TimeEntry, rankBySimilarity, localDateStr, dayBucket, timeline
 } = k;
 
 define('search_projects',
@@ -172,7 +172,10 @@ define('update_task',
     if (args.title) { task.title = args.title; changes.push('título'); }
     if (args.status) {
       task.status = args.status;
-      if (args.status === 'Completed') task.completedAt = ctx.now;
+      if (args.status === 'Completed') {
+        task.completedAt = ctx.now;
+        await completeInPlannings('task', task._id, ctx.rec);
+      }
       changes.push(`estado ${args.status}`);
     }
     if (args.estimatedMinutes) { task.estimatedTime = Math.round(args.estimatedMinutes); changes.push(`${task.estimatedTime} min`); }
@@ -275,5 +278,27 @@ define('update_activity',
       status: 'updated',
       activity: activityView(activity),
       summary: `Actividad actualizada: ${activity.name} · ${activity.estimatedDuration} min${activity.autoStop ? ' · auto-cierre' : ''}`
+    };
+  });
+
+define('complete_task',
+  'Marca una tarea como terminada ("terminé X", "ya hice la primera tarea"): estado Completed, la marca como completada en el plan del día (desaparece de pendientes) y detiene el cronómetro si estaba corriendo.',
+  obj({ taskId: str('Id de la tarea (usa get_day_plan o search_tasks para encontrarla)') }, ['taskId']),
+  async ({ taskId }, ctx) => {
+    const task = await Task.findById(taskId).catch(() => null);
+    if (!task) return fail('Tarea no encontrada');
+    const running = await TimeEntry.findOne({ isActive: true, task: task._id });
+    if (running) await timeline.withLock(() => timeline.closeEntry(running, ctx.now, ctx.rec));
+    ctx.rec.before(task);
+    task.status = 'Completed';
+    task.completedAt = ctx.now;
+    await task.save();
+    const plans = await completeInPlannings('task', task._id, ctx.rec, running ? running.duration : 0);
+    return {
+      status: 'completed',
+      task: task.title,
+      stoppedTimer: !!running,
+      updatedPlans: plans,
+      summary: `Completada: ${task.title}${running ? ' (cronómetro detenido)' : ''}`
     };
   });
