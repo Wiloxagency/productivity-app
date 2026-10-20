@@ -107,7 +107,7 @@ define('complete_current',
   });
 
 define('schedule_sequence',
-  'Encadena actividades/tareas que se inician y cierran solas una tras otra ("voy a nadar, luego al gimnasio y por último a caminar"). Usa la duración por defecto de cada una salvo que el usuario indique otra.',
+  'Encadena rutinas que se inician y cierran solas una tras otra ("voy a nadar, luego al gimnasio y por último a caminar"). Solo las actividades con auto-cierre arrancan/cierran solas; las tareas de trabajo, el almuerzo y las comidas NUNCA arrancan solas (quedan como "Siguiente"). NO lo uses para planificar la jornada de trabajo: para eso está plan_day.',
   obj({
     items: {
       type: 'array',

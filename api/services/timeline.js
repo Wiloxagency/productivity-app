@@ -10,6 +10,21 @@ const Activity = require('../models/Activity');
 const Task = require('../models/Task');
 const AssistantSettings = require('../models/AssistantSettings');
 const { localDateStr, dayBucket, addMinutes } = require('../utils/time');
+const { findLunchActivity } = require('./dayPlanner');
+
+// Only routine activities with auto-close (swim, gym, walk…) may start by
+// themselves. Tasks (work), lunch and any meal are NEVER auto-started: they
+// stay as "Siguiente" with a play button. Leonardo: "estoy trabajando y aún no
+// tengo tiempo para almorzar".
+const canAutoStart = async (item) => {
+  if (!item || item.itemType !== 'activity' || !item.autoStart) return false;
+  const activity = await Activity.findById(item.activity).populate('category', 'name');
+  if (!activity || !activity.autoStop) return false;
+  if (activity.category?.name === 'Meals') return false;
+  const lunch = await findLunchActivity(await AssistantSettings.getSingleton());
+  if (lunch && String(lunch._id) === String(activity._id)) return false;
+  return true;
+};
 
 const isBreakName = (name) => (name || '').trim().toLowerCase() === 'break time';
 
@@ -98,7 +113,8 @@ const startQueueItem = async (item, at, tz, rec) => {
       id: item.itemType === 'task' ? item.task : item.activity,
       startAt: at,
       plannedMinutes: item.plannedMinutes,
-      autoStop: true,
+      // undefined -> activity's own autoStop flag; tasks never auto-close
+      autoStop: undefined,
       sequenceId: item.sequenceId,
       source: rec ? 'assistant' : 'auto',
       tz,
@@ -123,6 +139,12 @@ const enforceAutoStops = (now = new Date()) => withLock(async () => {
   const events = [];
   const tz = await getTimezone();
 
+  // Expire stale queue items (left over from previous days / never started)
+  await QueueItem.updateMany(
+    { status: 'pending', $or: [{ createdAt: { $lt: addMinutes(now, -16 * 60) } }, { scheduledStart: { $lt: addMinutes(now, -3 * 60) } }] },
+    { $set: { status: 'skipped' } }
+  );
+
   // Queue items whose entry was stopped from the regular UI routes
   const running = await QueueItem.find({ status: 'running' });
   for (const item of running) {
@@ -145,7 +167,7 @@ const enforceAutoStops = (now = new Date()) => withLock(async () => {
 
       if (active.sequenceId) {
         const next = await QueueItem.findOne({ sequenceId: active.sequenceId, status: 'pending' }).sort({ order: 1 });
-        if (next && next.autoStart) {
+        if (next && await canAutoStart(next)) {
           const started = await startQueueItem(next, end, tz);
           if (started) events.push({ type: 'auto-started', entryId: started._id, at: end });
         }
@@ -155,12 +177,18 @@ const enforceAutoStops = (now = new Date()) => withLock(async () => {
 
     // 2) First item of a sequence scheduled for a given time ("a las 6 voy a nadar")
     const runningSequences = await QueueItem.distinct('sequenceId', { status: 'running' });
-    const due = await QueueItem.findOne({
+    // Never interrupt something the user is doing (work, lunch…): only start
+    // when nothing runs or what runs is itself an auto-closing routine.
+    const candidates = (!active || active.autoStop) ? await QueueItem.find({
       status: 'pending',
       autoStart: true,
       scheduledStart: { $lte: now },
       sequenceId: { $nin: runningSequences }
-    }).sort({ scheduledStart: 1, order: 1 });
+    }).sort({ scheduledStart: 1, order: 1 }) : [];
+    let due = null;
+    for (const c of candidates) {
+      if (await canAutoStart(c)) { due = c; break; }
+    }
 
     if (due) {
       const startAt = active && active.startTime > due.scheduledStart ? active.startTime : due.scheduledStart;
@@ -304,5 +332,6 @@ module.exports = {
   startQueueItem,
   enforceAutoStops,
   adjustEntryDuration,
-  withLock
+  withLock,
+  canAutoStart
 };

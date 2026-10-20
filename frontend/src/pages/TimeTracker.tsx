@@ -1117,7 +1117,7 @@ export default function TimeTracker() {
                             </TableCell>
                             <TableCell>
                               <Box sx={{ display: 'flex', gap: 1 }}>
-                                {!entry.isActive && entry.task?.status !== 'Completed' && (
+                                {!entry.isActive && (
                                   <IconButton
                                     size="small"
                                     color="success"
