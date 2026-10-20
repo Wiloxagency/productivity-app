@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
           select: 'name color'
         }
       })
-      .populate('task', 'title estimatedTime quadrant')
+      .populate('task', 'title estimatedTime quadrant status')
       .populate({
         path: 'task',
         populate: {
@@ -67,7 +67,7 @@ router.get('/active', async (req, res) => {
           select: 'name color'
         }
       })
-      .populate('task', 'title estimatedTime quadrant')
+      .populate('task', 'title estimatedTime quadrant status')
       .populate({
         path: 'task',
         populate: {
@@ -200,7 +200,7 @@ router.post('/start-task', async (req, res) => {
     });
     
     await timeEntry.save();
-    await timeEntry.populate('task', 'title estimatedTime quadrant');
+    await timeEntry.populate('task', 'title estimatedTime quadrant status');
     await timeEntry.populate({
       path: 'task',
       populate: {
@@ -266,7 +266,7 @@ router.put('/switch-task/:id', async (req, res) => {
     }
     
     await timeEntry.save();
-    await timeEntry.populate('task', 'title estimatedTime quadrant');
+    await timeEntry.populate('task', 'title estimatedTime quadrant status');
     await timeEntry.populate({
       path: 'task',
       populate: {
@@ -302,7 +302,7 @@ router.put('/stop/:id', async (req, res) => {
         select: 'name color'
       }
     });
-    await timeEntry.populate('task', 'title estimatedTime quadrant');
+    await timeEntry.populate('task', 'title estimatedTime quadrant status');
     await timeEntry.populate({
       path: 'task',
       populate: {
@@ -424,7 +424,7 @@ router.post('/manual', async (req, res) => {
         select: 'name color'
       }
     });
-    await timeEntry.populate('task', 'title estimatedTime quadrant');
+    await timeEntry.populate('task', 'title estimatedTime quadrant status');
     await timeEntry.populate({
       path: 'task',
       populate: {
@@ -484,7 +484,7 @@ router.put('/:id', async (req, res) => {
         select: 'name color'
       }
     });
-    await updatedEntry.populate('task', 'title estimatedTime quadrant');
+    await updatedEntry.populate('task', 'title estimatedTime quadrant status');
     await updatedEntry.populate({
       path: 'task',
       populate: {

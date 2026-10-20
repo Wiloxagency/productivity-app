@@ -428,6 +428,12 @@ export default function TimeTracker() {
     return 3; // scheduled later today (deprioritized vs normal unscheduled items)
   };
 
+  // Planned start for the queue rows: explicit planned time, else the task's fixed schedule time
+  const getPlannedStart = (item: PlannedItemPreview): dayjs.Dayjs | null => {
+    if (item.plannedStartTime) return dayjs(item.plannedStartTime);
+    return parseScheduleTimeForToday(item.scheduleTime);
+  };
+
   const sortedPlannedItems: PlannedItemPreview[] = dailyPlanning
     ? [
         ...(dailyPlanning.plannedTasks || []).map((pt) => ({
@@ -917,13 +923,13 @@ export default function TimeTracker() {
                             />
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              —
+                            <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', fontStyle: 'italic' }}>
+                              {getPlannedStart(item) ? `~${getPlannedStart(item)!.format('HH:mm')}` : '—'}
                             </Typography>
                           </TableCell>
                           <TableCell>
-                            <Typography variant="body2" sx={{ fontSize: '0.8rem' }}>
-                              —
+                            <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem', fontStyle: 'italic' }}>
+                              {getPlannedStart(item) ? `~${getPlannedStart(item)!.add(item.plannedMinutes || 0, 'minute').format('HH:mm')}` : '—'}
                             </Typography>
                           </TableCell>
                           <TableCell>
@@ -1038,6 +1044,15 @@ export default function TimeTracker() {
                                       sx={{ ml: 1, fontSize: '0.6rem', height: '16px' }}
                                     />
                                   )}
+                                  {entry.task?.status === 'Completed' && (
+                                    <Chip
+                                      label="✓ Completada"
+                                      size="small"
+                                      color="success"
+                                      variant="outlined"
+                                      sx={{ ml: 1, fontSize: '0.6rem', height: '16px' }}
+                                    />
+                                  )}
                                 </Typography>
                               </Box>
                             </TableCell>
@@ -1102,7 +1117,7 @@ export default function TimeTracker() {
                             </TableCell>
                             <TableCell>
                               <Box sx={{ display: 'flex', gap: 1 }}>
-                                {!entry.isActive && (
+                                {!entry.isActive && entry.task?.status !== 'Completed' && (
                                   <IconButton
                                     size="small"
                                     color="success"
