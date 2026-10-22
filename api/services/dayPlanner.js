@@ -126,12 +126,17 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = false, inclu
   // Planned activities
   const lunch = await findLunchActivity(settings);
   const lunchKey = lunch ? key('activity', lunch._id) : null;
+  let lunchPlan = null; // the lunch item of this day's plan (may carry a fixed time)
   (planning?.plannedActivities || []).forEach((pa) => {
     const activity = pa.activity;
     if (!activity) return;
     const k = key('activity', activity._id);
     inPlan.add(k);
-    if (pa.completed || k === lunchKey) return;
+    if (k === lunchKey) {
+      lunchPlan = pa;
+      return;
+    }
+    if (pa.completed) return;
     const minutes = pa.plannedDuration || activity.estimatedDuration || settings.defaultTaskMinutes;
     const remaining = Math.max(0, minutes - (tracked.get(k) || 0));
     if (!remaining || k === activeKey) return;
@@ -153,12 +158,15 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = false, inclu
   // Lunch block (always, unless already eaten)
   let lunchInfo = null;
   if (lunch) {
-    const lunchStart = zonedToUtc(ymd, settings.lunchTime, tz);
-    const lunchEnd = addMinutes(lunchStart, settings.lunchDuration);
-    const eaten = (tracked.get(lunchKey) || 0) >= settings.lunchDuration / 2;
-    lunchInfo = { start: lunchStart, end: lunchEnd, eaten, activityId: String(lunch._id), title: lunch.name };
+    // A lunch time set explicitly for this day ("almuerzo a las 11") wins over Settings
+    const lunchFixed = !!(lunchPlan && lunchPlan.fixedTime && lunchPlan.plannedStartTime);
+    const lunchMinutes = (lunchPlan && lunchPlan.plannedDuration) || settings.lunchDuration;
+    const lunchStart = lunchFixed ? new Date(lunchPlan.plannedStartTime) : zonedToUtc(ymd, settings.lunchTime, tz);
+    const lunchEnd = addMinutes(lunchStart, lunchMinutes);
+    const eaten = !!(lunchPlan && lunchPlan.completed) || (tracked.get(lunchKey) || 0) >= lunchMinutes / 2;
+    lunchInfo = { start: lunchStart, end: lunchEnd, eaten, fixed: lunchFixed, activityId: String(lunch._id), title: lunch.name };
     if (!eaten && lunchKey !== activeKey) {
-      const remaining = Math.max(5, settings.lunchDuration - (tracked.get(lunchKey) || 0));
+      const remaining = Math.max(5, lunchMinutes - (tracked.get(lunchKey) || 0));
       let start = lunchStart;
       // Lunch slides (up to 2 h) instead of being "missed"
       if (isToday && now > lunchStart && now <= addMinutes(lunchEnd, 120)) start = roundUp(now);
@@ -220,11 +228,27 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = false, inclu
 
   hard.sort((a, b) => a.start - b.start);
 
-  // Free gaps between hard blocks
+  let lowerBound = cursor;
+  if (active && active.plannedEnd && isToday && active.plannedEnd > lowerBound) lowerBound = roundUp(active.plannedEnd);
+
+  // Stable re-plans: a flexible item keeps the slot it already had while that
+  // slot is still free (only new or displaced items get placed again).
+  const kept = [];
+  [...flexible].filter((i) => i.prevStart).sort((a, b) => new Date(a.prevStart) - new Date(b.prevStart)).forEach((item) => {
+    const start = new Date(item.prevStart);
+    const end = addMinutes(start, item.minutes);
+    if (start < lowerBound || end > dayEnd) return;
+    if ([...hard, ...kept].some((h) => start < h.end && end > h.start)) return;
+    kept.push({ ...item, start, end });
+  });
+  const keptKeys = new Set(kept.map((i) => i.key));
+  const toPlace = flexible.filter((i) => !keptKeys.has(i.key));
+  const blocks = [...hard, ...kept].sort((a, b) => a.start - b.start);
+
+  // Free gaps between fixed/kept blocks
   const gaps = [];
-  let gapStart = cursor;
-  if (active && active.plannedEnd && isToday && active.plannedEnd > gapStart) gapStart = roundUp(active.plannedEnd);
-  hard.forEach((h) => {
+  let gapStart = lowerBound;
+  blocks.forEach((h) => {
     if (h.start > gapStart) gaps.push({ start: gapStart, end: h.start });
     if (h.end > gapStart) gapStart = h.end;
   });
@@ -232,20 +256,55 @@ const buildDayPlan = async ({ date, apply = false, includeBacklog = false, inclu
 
   const placed = [];
   const unscheduled = [];
-  flexible.forEach((item) => {
-    const need = item.minutes + buffer;
-    const gap = gaps.find((g) => diffMinutes(g.end, g.start) >= need || (diffMinutes(g.end, g.start) >= item.minutes && g.end.getTime() === dayEnd.getTime()));
-    if (!gap) {
-      unscheduled.push(item);
-      return;
-    }
+  const fits = (g, item) => {
+    const free = diffMinutes(g.end, g.start);
+    return free >= item.minutes + buffer || (free >= item.minutes && g.end.getTime() === dayEnd.getTime());
+  };
+  const placeAt = (gap, item) => {
     const start = gap.start;
     const end = addMinutes(start, item.minutes);
     placed.push({ ...item, start, end });
     gap.start = addMinutes(end, buffer);
-  });
+  };
+  const firstHardStart = blocks.length ? blocks[0].start : null;
+  // Today (or once the day started): fill from now on, chronologically.
+  // Future day with fixed blocks: keep the day compact around them — first the
+  // gaps between fixed blocks (meeting 10–11, lunch 12 -> 11–12), then the time
+  // right before the first fixed block (filled backwards), then after the last one.
+  const anchored = !isToday && firstHardStart && gaps.length > 1 && gaps[0].end.getTime() === firstHardStart.getTime();
+  if (!anchored) {
+    toPlace.forEach((item) => {
+      const gap = gaps.find((g) => fits(g, item));
+      if (gap) placeAt(gap, item);
+      else unscheduled.push(item);
+    });
+  } else {
+    const leading = gaps[0];
+    const inner = gaps.slice(1).filter((g) => g.end.getTime() !== dayEnd.getTime());
+    const trailing = gaps.slice(1).filter((g) => g.end.getTime() === dayEnd.getTime());
+    const beforeFirst = [];
+    let leadingFree = diffMinutes(leading.end, leading.start);
+    toPlace.forEach((item) => {
+      const gap = inner.find((g) => fits(g, item));
+      if (gap) return placeAt(gap, item);
+      if (leadingFree >= item.minutes + buffer) {
+        beforeFirst.push(item);
+        leadingFree -= item.minutes + buffer;
+        return undefined;
+      }
+      const tail = trailing.find((g) => fits(g, item));
+      if (tail) return placeAt(tail, item);
+      unscheduled.push(item);
+      return undefined;
+    });
+    // Lay the "before" block out so it ends right before the first fixed block
+    const total = beforeFirst.reduce((sum, item) => sum + item.minutes + buffer, 0);
+    const block = { start: addMinutes(leading.end, -total), end: leading.end };
+    beforeFirst.forEach((item) => placeAt(block, item));
+    leading.end = addMinutes(leading.end, -total);
+  }
 
-  const timeline = [...hard, ...placed].sort((a, b) => a.start - b.start);
+  const timeline = [...hard, ...kept, ...placed].sort((a, b) => a.start - b.start);
   const freeMinutes = gaps.reduce((sum, g) => sum + Math.max(0, diffMinutes(g.end, g.start)), 0);
 
   if (apply) {

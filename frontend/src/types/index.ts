@@ -248,4 +248,20 @@ export interface AssistantSettings {
   bufferMinutes: number;
   defaultTaskMinutes: number;
   customInstructions: string;
+  defaultProject?: string | null;
+}
+
+export type AssistantMemoryKind = 'preference' | 'style' | 'habit' | 'fact' | 'reminder' | 'note';
+
+export interface AssistantMemory {
+  _id: string;
+  kind: AssistantMemoryKind;
+  text: string;
+  subject?: string;
+  minutes?: number;
+  dueDate?: string;
+  oneShot?: boolean;
+  status: 'active' | 'done' | 'archived';
+  source?: 'assistant' | 'user';
+  createdAt: string;
 }

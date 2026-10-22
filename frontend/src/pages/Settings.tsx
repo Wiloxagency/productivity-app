@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Box, Typography, Tabs, Tab } from '@mui/material';
 import ActivityManager from '../components/ActivityManager';
 import AssistantSettingsForm from '../components/Assistant/AssistantSettingsForm';
+import AssistantMemoryCard from '../components/Assistant/AssistantMemoryCard';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -80,6 +81,9 @@ export default function Settings() {
 
       <TabPanel value={tabValue} index={3}>
         <AssistantSettingsForm />
+        <Box sx={{ mt: 3 }}>
+          <AssistantMemoryCard />
+        </Box>
       </TabPanel>
     </Box>
   );

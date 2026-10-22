@@ -1,8 +1,10 @@
 // Search / create / update tools (projects, tasks, activities)
 const k = require('./toolkit');
+const { estimateMinutes } = require('../durations');
+const { activeMemories, consumeMatchingReminders } = require('./memory');
 const {
   define, str, num, bool, obj, fail, taskView, activityView, resolveWhen, findCategory, addTaskToPlanning,
-  backlogPriority, completeInPlannings, Project, Task, Activity, TimeEntry, rankBySimilarity, localDateStr, dayBucket, timeline
+  backlogPriority, completeInPlannings, getDefaultProject, Project, Task, Activity, TimeEntry, rankBySimilarity, localDateStr, dayBucket, timeline
 } = k;
 
 define('search_projects',
@@ -71,12 +73,12 @@ define('create_project',
   });
 
 define('create_task',
-  'Crea una tarea (o subtarea con parentTaskId) y, si tiene fecha, la agrega al plan de ese día ordenada por hora. Requiere proyecto existente y duración estimada.',
+  'Crea una tarea (o subtarea con parentTaskId) y, si tiene fecha, la agrega al plan de ese día ordenada por hora. Sin projectId usa el proyecto por defecto; sin estimatedMinutes el servidor estima la duración. Para agendar varias cosas de un día usa organize_day.',
   obj({
     title: str('Título claro y corto, p.ej. "Reunión: detalles de integración"'),
-    projectId: str('Id del proyecto (de search_projects). Puede omitirse si hay parentTaskId.'),
+    projectId: str('Id del proyecto (de search_projects). Omitir = proyecto padre o proyecto por defecto.'),
     parentTaskId: str('Id de la tarea padre si es subtarea'),
-    estimatedMinutes: num('Duración estimada en minutos'),
+    estimatedMinutes: num('Duración en minutos si el usuario la dijo (si no, se estima)'),
     date: str('Fecha YYYY-MM-DD en la zona de timeZone (o del usuario)'),
     time: str('Hora HH:mm si tiene hora fija (reuniones/citas)'),
     timeZone: str('Zona IANA en la que el usuario dio la hora, p.ej. "Europe/Madrid" para "hora de España". Omitir si es su hora local.'),
@@ -85,7 +87,7 @@ define('create_task',
     description: str('Descripción / notas (p.ej. "mostrar los resultados")'),
     addToDailyPlan: bool('Agregar al plan del día de la fecha (por defecto true si hay fecha)'),
     allowDuplicate: bool('true solo si el usuario confirmó que NO es una de las tareas similares existentes')
-  }, ['title', 'estimatedMinutes']),
+  }, ['title']),
   async (args, ctx) => {
     let project = args.projectId ? await Project.findById(args.projectId).catch(() => null) : null;
     let parent = null;
@@ -94,9 +96,18 @@ define('create_task',
       if (!parent) return fail('parentTaskId no existe; usa search_tasks.');
       if (!project) project = await Project.findById(parent.project);
     }
-    if (!project) return fail('Proyecto no encontrado. Usa search_projects y, si no existe, pregunta al usuario si desea crearlo.');
-    const minutes = Math.round(Number(args.estimatedMinutes));
-    if (!(minutes > 0)) return { status: 'missing_fields', missing: ['estimatedMinutes'], message: 'Pregunta la duración estimada.' };
+    if (args.projectId && !project) return fail('projectId no existe; usa search_projects.');
+    let usedDefaultProject = false;
+    if (!project) {
+      project = await getDefaultProject(ctx);
+      usedDefaultProject = true;
+    }
+    let minutes = Math.round(Number(args.estimatedMinutes));
+    let estimated = null;
+    if (!(minutes > 0)) {
+      estimated = await estimateMinutes({ itemType: 'task', name: args.title, memories: await activeMemories(), settings: ctx.settings, now: ctx.now });
+      minutes = estimated.minutes;
+    }
 
     const when = resolveWhen(args, ctx);
     if (when.error) return fail(when.error);
@@ -134,6 +145,7 @@ define('create_task',
 
     if (when.ymd && args.addToDailyPlan !== false) {
       await addTaskToPlanning(when.ymd, task, { start: when.instant, minutes }, ctx.rec);
+      await consumeMatchingReminders([task.title], ctx.rec, ctx.now);
     }
 
     const whenText = when.ymd ? ` · ${when.ymd}${when.hhmm ? ` ${when.hhmm}` : ''}${when.source ? ` (${when.source})` : ''}` : '';
@@ -144,6 +156,10 @@ define('create_task',
       localTime: when.hhmm,
       sourceTime: when.source,
       assumedTomorrow: when.assumedTomorrow || undefined,
+      assumed: (usedDefaultProject || estimated) ? [
+        usedDefaultProject ? `proyecto por defecto (${project.name})` : null,
+        estimated ? `duración ${minutes} min (${estimated.source})` : null
+      ].filter(Boolean) : undefined,
       summary: `Tarea creada: ${task.title} · ${project.name}${parent ? ` › ${parent.title}` : ''}${whenText} · ${minutes} min`
     };
   });

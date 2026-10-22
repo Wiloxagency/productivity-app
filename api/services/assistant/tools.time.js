@@ -2,6 +2,7 @@
 const k = require('./toolkit');
 const AssistantSettings = require('../../models/AssistantSettings');
 const { findLunchActivity } = require('../dayPlanner');
+const { dueReminders, consumeMatchingReminders } = require('./memory');
 const {
   define, str, num, bool, obj, fail, entryView, resolveWhen, markPlanningCompleted, findEntryByName, completeInPlannings,
   crypto, Task, Activity, TimeEntry, QueueItem, rankBySimilarity, zonedToUtc, localDateStr, localTimeStr,
@@ -222,7 +223,7 @@ define('adjust_entry_time',
   });
 
 define('plan_day',
-  'Ordena el día con horas de inicio/fin: bloques fijos (reuniones con hora, almuerzo) y luego las tareas en los huecos libres del horario. Usa SOLO lo ya planificado para ese día, las tareas fechadas ese día y las de includeTaskIds. NO mete el backlog salvo includeBacklog=true. Devuelve `suggestions` del backlog para que el usuario elija. apply=true guarda horas y orden.',
+  'Ordena el día con horas de inicio/fin: bloques fijos (reuniones con hora, almuerzo) y luego las tareas en los huecos libres del horario. Usa SOLO lo ya planificado para ese día, las tareas fechadas ese día y las de includeTaskIds. NO mete el backlog salvo includeBacklog=true. Devuelve `suggestions` del backlog (solo informativas: no preguntes por huecos) y `reminders` de memoria. apply=true guarda horas y orden. Para agregar/fijar varios elementos usa organize_day.',
   obj({
     date: str('Fecha YYYY-MM-DD (por defecto hoy)'),
     apply: bool('Guardar el plan (true) o solo proponerlo (false)'),
@@ -247,8 +248,10 @@ define('plan_day',
       unscheduledCount: plan.unscheduled.length,
       missed: plan.missed.map((i) => `${i.startLocal} ${i.title}`),
       suggestions: plan.suggestions.map((t) => ({ id: t.id, title: t.title, project: t.project, minutes: t.minutes, due: t.dueDate })),
-      freeMinutes: plan.freeMinutes
+      freeMinutes: plan.freeMinutes,
+      reminders: (await dueReminders(plan.date)).map((m) => ({ id: String(m._id), text: m.text, since: m.dueDate || undefined }))
     };
+    if (!compact.reminders.length) delete compact.reminders;
     if (plan.applied) compact.summary = `Plan del ${plan.date} ordenado: ${plan.timeline.length} bloques`;
     return compact;
   });
@@ -400,6 +403,7 @@ define('set_plan_item',
     if (args.minutes) item.plannedDuration = Math.round(args.minutes);
     normalizePlanningOrder(planning);
     await planning.save();
+    await consumeMatchingReminders([doc.title || doc.name], ctx.rec, ctx.now);
     const start = item.plannedStartTime ? localTimeStr(item.plannedStartTime, ctx.tz) : 'sin hora';
     return {
       status: 'ok',

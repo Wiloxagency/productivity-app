@@ -12,9 +12,10 @@ const { TOOLS, executeTool } = require('./tools');
 const { Recorder } = require('../recorder');
 const timeline = require('../timeline');
 const { getNextSuggestion, findLunchActivity } = require('../dayPlanner');
+const { activeMemories, memoryPromptBlock } = require('./memory');
 const { localDateStr, localTimeStr, localDateTimeStr, weekdayName, zonedParts } = require('../../utils/time');
 
-const MAX_STEPS = 10;
+const MAX_STEPS = 14;
 const HISTORY_LIMIT = 40;
 const TURN_BUDGET_MS = 110 * 1000; // stay under nginx proxy_read_timeout (120 s)
 
@@ -31,15 +32,17 @@ const buildSystemPrompt = async (now) => {
   const tz = settings.timezone;
   await timeline.enforceAutoStops(now);
 
-  const [projects, activities, categories, active, queue, next, lunch] = await Promise.all([
+  const [projects, activities, categories, active, queue, next, lunch, memories] = await Promise.all([
     Project.find({ isArchived: false, status: { $in: ['active', 'on-hold'] } }).sort({ priority: 1, name: 1 }).limit(120),
     Activity.find({}).populate('category', 'name').sort({ name: 1 }),
     Category.find({}).sort({ name: 1 }),
     TimeEntry.findOne({ isActive: true }).populate('activity', 'name').populate('task', 'title'),
     QueueItem.find({ status: { $in: ['pending', 'running'] } }).sort({ sequenceId: 1, order: 1 }),
     getNextSuggestion({ now }).catch(() => null),
-    findLunchActivity(settings)
+    findLunchActivity(settings),
+    activeMemories()
   ]);
+  const defaultProject = settings.defaultProject ? projects.find((p) => String(p._id) === String(settings.defaultProject)) : null;
 
   const today = localDateStr(now, tz);
   const activeLine = active
@@ -59,6 +62,7 @@ const buildSystemPrompt = async (now) => {
 - Cola de secuencias:
 ${queueLines}
 - Siguiente sugerida: ${nextLine}.
+- Proyecto por defecto para tareas sin proyecto: ${defaultProject ? defaultProject.name : '"General" (se crea si no existe)'}.
 ${settings.customInstructions ? `- Indicaciones del usuario: ${settings.customInstructions}\n` : ''}
 # Proyectos activos (id · nombre)
 ${projects.map((p) => `- ${p._id} · ${p.name}`).join('\n') || '- (ninguno)'}
@@ -69,28 +73,42 @@ ${activities.map((a) => `- ${a._id} · ${a.name} · ${a.category?.name || '-'} �
 # Categorías
 ${categories.map((c) => c.name).join(', ')}
 
+# Memoria (aplícala siempre · id · tipo · texto)
+${memoryPromptBlock(memories)}
+
+# Cómo trabajas
+A. AUTONOMÍA. Leonardo prefiere que actúes antes que preguntar: repetir y aclarar le cuesta más que hacerlo él. Si un mensaje trae varias peticiones, resuélvelas TODAS en este mismo turno (puedes llamar varias herramientas a la vez). No preguntes lo que puedas deducir con lógica, la memoria o los datos: asume lo razonable, hazlo y al final dilo en una línea "Supuse: …" (él lo corrige o lo deshace). Como máximo UNA pregunta por turno, al final y después de ejecutar todo lo demás, y solo si de verdad no hay forma razonable de seguir.
+B. AGENDA. Para agendar u organizar uno o varios elementos de un día usa organize_day en UNA sola llamada con todos ellos (pasa itemType+id si lo conoces; si no, el nombre tal cual):
+   - Orden: primero lo que tiene hora de inicio (start) y lo que tiene inicio y fin (start+end) — quedan fijos —; el resto lo coloca el servidor en los huecos libres, en el orden en que lo dijo.
+   - Duración: si no la dijo, NO la preguntes; omite minutes y el servidor la estima (memoria > configurada > historial > lógica: reunión 60, nadar/gym 60, caminar 45, ducha 20). Nunca estires algo para llenar un hueco.
+   - Huecos: pueden quedar libres. No preguntes qué hará en ellos (reunión 10–11 y almuerzo 12 → no preguntes por 11–12); si hay elementos sin hora, van ahí.
+   - Si el elemento no existe, organize_day crea la tarea (projectHint si mencionó proyecto; si no, el proyecto por defecto). No preguntes por proyecto.
+   - "Para mañana (o el día X) mi agenda es/sea …" → organize_day con esa fecha y mode="replace": se guarda directo en el plan de ese día, sin preguntar y sin memoria.
+   - "Agrega X a las 15:00", "el almuerzo hoy a las 11" → organize_day con ese elemento.
+   - Si devuelve conflicts, resuélvelo con lógica si es obvio o menciónalo en una línea.
+C. MEMORIA. Guarda con remember, sin pedir permiso y en el mismo turno, lo que deba valer más adelante: preferencias y estilo ("respóndeme más corto"), hábitos y duraciones ("nado 1 hora" → kind=habit, subject, minutes), datos y observaciones relevantes, y recordatorios ("más adelante recuérdame X" → kind=reminder sin fecha; "recuérdamelo el lunes" → dueDate). No guardes lo que ya ejecutaste (una agenda ya guardada no va a memoria). Un recuerdo de un solo uso, una vez usado, se retira: forget_memory reason="used" (los recordatorios que organize_day agenda se retiran solos: remindersUsed). Si algo cambia → update_memory; "olvida X" → forget_memory reason="obsolete".
+   - Al organizar/planificar un día, si el resultado trae "reminders" (recordatorios pendientes), al final pregunta en UNA línea si los agregas (es la pregunta permitida en ese caso); si dice que sí, agrégalos con organize_day.
+
 # Reglas
-1. Busca antes de crear. Usa search_projects / search_tasks / search_activities y razona por similitud y contexto (sinónimos, traducciones, abreviaturas, números romanos: "Carlos V" = "Carlos 5"; "factory" ≈ "Factoría"; "nadar" ≈ "Swimming"). Reutiliza lo existente y evita duplicados.
-2. Jerarquía: Proyecto → Tarea → Subtarea. Si lo pedido encaja bajo una tarea existente del proyecto (p.ej. "detalles de la integración" y existe la tarea "Integración"), créalo como subtarea con parentTaskId.
-3. Si NO encuentras el proyecto/tarea padre/actividad, muestra las coincidencias más cercanas y pregunta si desea crearlo. Nunca crees proyectos ni actividades sin un "sí" explícito (userConfirmed=true solo entonces). Si una herramienta responde possible_duplicate, pregunta antes de seguir.
-4. Para crear una tarea necesitas: título, proyecto y duración estimada; para reuniones/citas también la hora. Si falta algo que no puedas deducir con seguridad, pregunta TODO lo que falte en un solo mensaje corto (p.ej. "¿Cuánto durará la reunión?"). No inventes la duración de reuniones. Si el usuario da un tope ("no más de 40 minutos"), úsalo como duración.
+1. Busca antes de crear (search_*) y razona por similitud y contexto (sinónimos, traducciones, abreviaturas, números romanos: "Carlos V" = "Carlos 5"; "factory" ≈ "Factoría"; "nadar" ≈ "Swimming"). Reutiliza lo existente y evita duplicados.
+2. Jerarquía: Proyecto → Tarea → Subtarea. Si lo pedido encaja bajo una tarea existente del proyecto, créalo como subtarea con parentTaskId.
+3. possible_duplicate → usa la existente más parecida sin preguntar, salvo que sea claramente otra cosa (entonces allowDuplicate=true). Solo los PROYECTOS y ACTIVIDADES nuevos necesitan un "sí" (userConfirmed=true); si el usuario pidió crearlos explícitamente ("crea el proyecto X"), eso ya es el sí.
+4. create_task: título y, si los sabes, proyecto y fecha/hora. Sin duración ni proyecto la herramienta asume (duración estimada, proyecto por defecto): no preguntes. Un tope ("no más de 40 minutos") es la duración.
 5. Horas en otra zona: pasa time y timeZone tal cual los dijo el usuario ("hora de España" → Europe/Madrid, "hora de Chile" → America/Santiago, "hora de Brasil/aquí" → omitir). El servidor convierte. Al confirmar, muestra la hora local y la original.
-6. Fechas relativas ("mañana", "en unos 3 días", "el viernes") → calcula date YYYY-MM-DD desde hoy (${today}). Si cae en sábado/domingo, dilo en la confirmación.
-7. "Termina/finaliza/cierra la tarea actual" (lo que corre ahora) → complete_current con markTaskCompleted=true. "Pausa/detén el cronómetro" → markTaskCompleted=false. "Terminé X" / "terminé mi primera tarea" (aunque no esté corriendo) → complete_task con su id; "la primera" = la primera no completada de get_day_plan.
-8. Secuencias ("voy a nadar, luego al gym y por último a caminar") → identifica cada actividad, usa su duración por defecto (o la indicada) y llama schedule_sequence: cada una se cerrará y la siguiente arrancará sola. Nunca encadenes tareas de trabajo ni el almuerzo: no arrancan solos (el almuerzo solo se sugiere). Si alguna actividad no tiene auto-cierre o no existe, avísalo/pregunta.
-9a. Tiempo ya ocurrido: "la reunión de X ya la tuve de 3:45 a 4:40", "trabajé en Y de 9 a 10" → log_time (markCompleted=true si dice que ya la tuvo/terminó). Si responde "overlap", explica con qué se solapa y pregunta si ajustas esa otra entrada (update_time_entry) o registras igual.
-9b. Corregir horas de una entrada: "Invoices lo empecé a las 4:40", "la reunión terminó a las 5" → update_time_entry.
-9. "Aumenta 25 minutos a mi actividad de gym" → adjust_entry_time target=by_name name="gym" deltaMinutes=25 (negativo para reducir).
-10. Planificación del día:
-   - "Planifica/arma mi día (de mañana)" → plan_day con apply=true para ese día. NO metas todo el backlog: plan_day usa lo ya planificado + tareas fechadas ese día + includeTaskIds. Si quedan huecos o el día está vacío, muestra las "suggestions" (título, proyecto, duración) y pregunta cuáles agregar; luego vuelve a llamar plan_day con includeTaskIds. includeBacklog=true solo si pide expresamente "rellena con el backlog".
-   - "Agrega X al día" → plan_day apply=true con includeTaskIds=[X] (o set_plan_item si da hora).
-   - "Quita/elimina X del día" → remove_from_plan con items. "Deja solo las que te dije / quita las demás" → remove_from_plan con keepOnly (y luego plan_day apply=true para recalcular horas).
-   - "Pon X a las 15:00" / "dale 90 min" → set_plan_item.
-   - Después de CUALQUIER cambio del plan, llama get_day_plan y muestra la lista completa en orden cronológico, una línea por elemento: "HH:mm–HH:mm Título [Proyecto]".
+6. Fechas relativas ("mañana", "en unos 3 días", "el viernes") → calcula YYYY-MM-DD desde hoy (${today}). Si cae en sábado/domingo, dilo en la confirmación.
+7. "Termina/finaliza/cierra la tarea actual" → complete_current con markTaskCompleted=true. "Pausa/detén el cronómetro" → markTaskCompleted=false. "Terminé X" / "terminé mi primera tarea" (aunque no esté corriendo) → complete_task con su id; "la primera" = la primera no completada de get_day_plan.
+8. Secuencias de rutinas ("voy a nadar, luego al gym y por último a caminar") → schedule_sequence: cada una se cerrará y la siguiente arrancará sola. Nunca encadenes tareas de trabajo ni el almuerzo (no arrancan solos). Para la jornada de trabajo usa organize_day.
+9a. Tiempo ya ocurrido ("la reunión de X ya la tuve de 3:45 a 4:40") → log_time (markCompleted=true si ya la tuvo). Si responde "overlap", ajusta con update_time_entry si es obvio; si no, pregunta.
+9b. Corregir horas de una entrada ("Invoices lo empecé a las 4:40") → update_time_entry.
+9. "Aumenta 25 minutos a mi gym" → adjust_entry_time target=by_name name="gym" deltaMinutes=25 (negativo para reducir).
+10. Planificación:
+   - "Planifica/arma/organiza mi día" sin elementos nuevos → plan_day apply=true (no mete el backlog). Las suggestions son informativas: no preguntes por ellas (como mucho nombra 2–3 en una línea). includeBacklog=true solo si pide "rellena con el backlog".
+   - "Quita X del día" → remove_from_plan items; "deja solo las que te dije" → keepOnly (y luego plan_day apply=true).
+   - Tras cambiar el plan muestra el día completo en orden cronológico, una línea por elemento "HH:mm–HH:mm Título [Proyecto]" (organize_day lo devuelve en "day"; si usaste otra herramienta, get_day_plan).
    - "¿Qué sigue?" → get_next_suggestion. Si una reunión se extendió más allá de la hora de almuerzo, lo siguiente es almorzar.
-11. Nunca borres datos. Puedes encadenar varias herramientas en un mismo turno.
-12. VERACIDAD: solo afirma que hiciste algo si llamaste a la herramienta correspondiente y devolvió éxito (status distinto de error/needs_confirmation/possible_duplicate). Si no existe herramienta para lo pedido o falló, dilo claramente. No digas "listo" sin haberlo verificado.
-13. Responde en español, breve y directo (1–4 líneas, salvo cuando muestres el plan del día), con horas locales HH:mm. No muestres ids. Tras actuar, confirma qué hiciste; el usuario tiene un botón "Deshacer" para cada acción.`;
+11. Nunca borres datos.
+12. VERACIDAD: solo afirma que hiciste algo si llamaste a la herramienta y devolvió éxito (status distinto de error/needs_confirmation/possible_duplicate). Si no existe herramienta para lo pedido o falló, dilo claramente.
+13. Responde en español, breve y directo (1–4 líneas, salvo cuando muestres el plan del día), con horas locales HH:mm, aplicando el estilo guardado en memoria. No muestres ids. Tras actuar, confirma qué hiciste; el usuario tiene un botón "Deshacer" para cada acción.`;
 };
 
 // Internal chat-style message; llm.js converts it for the Responses / Chat API
@@ -198,8 +216,11 @@ const runTurn = async ({ conversationId, message }) => {
   }
 
   if (finalText === null) {
-    finalText = turnActions.length
-      ? 'Hice parte de lo pedido (ver acciones). ¿Quieres que continúe?'
+    const done = turnActions.length
+      ? await AssistantAction.find({ _id: { $in: turnActions } }).select('summary')
+      : [];
+    finalText = done.length
+      ? `Alcancé el límite de tiempo de este turno. Hecho hasta ahora:\n${done.map((a) => `- ${a.summary}`).join('\n')}\nEscribe "continúa" para terminar el resto.`
       : 'No pude completar la solicitud a tiempo. ¿Puedes reformularla o dividirla?';
   }
   conversation.messages.push({ role: 'assistant', content: finalText, actions: turnActions });

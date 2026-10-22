@@ -13,6 +13,7 @@ import {
   AssistantMessage,
   AssistantLiveState,
   AssistantSettings,
+  AssistantMemory,
 } from '../types';
 
 const api = axios.create({
@@ -139,6 +140,9 @@ export const assistantApi = {
   live: () => api.get<AssistantLiveState>('/assistant/next').then(res => res.data),
   getSettings: () => api.get<AssistantSettings>('/assistant/settings').then(res => res.data),
   updateSettings: (data: Partial<AssistantSettings>) => api.put<AssistantSettings>('/assistant/settings', data).then(res => res.data),
+  memory: () => api.get<AssistantMemory[]>('/assistant/memory').then(res => res.data),
+  addMemory: (data: Partial<AssistantMemory>) => api.post<AssistantMemory>('/assistant/memory', data).then(res => res.data),
+  deleteMemory: (id: string) => api.delete(`/assistant/memory/${id}`).then(res => res.data),
 };
 
 export default api;

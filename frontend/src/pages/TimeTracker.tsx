@@ -412,22 +412,6 @@ export default function TimeTracker() {
       .millisecond(0);
   };
 
-  const getSchedulePriorityRank = (item: PlannedItemPreview): number => {
-    if (!selectedDate.isSame(currentTime, 'day')) return 2;
-    const scheduledAt = parseScheduleTimeForToday(item.scheduleTime);
-    if (!scheduledAt) return 2;
-
-    const now = currentTime.clone().second(0).millisecond(0);
-    const sessionEnd = currentTime.clone().second(0).millisecond(0).add(60, 'minute');
-    if (scheduledAt.isBefore(now) || scheduledAt.isSame(now)) {
-      return 0; // overdue or due now
-    }
-    if (scheduledAt.isBefore(sessionEnd) || scheduledAt.isSame(sessionEnd)) {
-      return 1; // upcoming in current 60-minute pomodoro window
-    }
-    return 3; // scheduled later today (deprioritized vs normal unscheduled items)
-  };
-
   // Planned start for the queue rows: explicit planned time, else the task's fixed schedule time
   const getPlannedStart = (item: PlannedItemPreview): dayjs.Dayjs | null => {
     if (item.plannedStartTime) return dayjs(item.plannedStartTime);
@@ -475,27 +459,18 @@ export default function TimeTracker() {
           }
           return item.id !== activeEntry?.activity?._id;
         })
+        // Chronological: by planned start (explicit planned time, else the fixed
+        // schedule time); items without any time go last, by priority.
         .sort((a, b) => {
-          const aScheduleRank = getSchedulePriorityRank(a);
-          const bScheduleRank = getSchedulePriorityRank(b);
-          if (aScheduleRank !== bScheduleRank) {
-            return aScheduleRank - bScheduleRank;
-          }
+          const aStart = getPlannedStart(a);
+          const bStart = getPlannedStart(b);
+          const aTime = aStart ? aStart.valueOf() : Number.MAX_SAFE_INTEGER;
+          const bTime = bStart ? bStart.valueOf() : Number.MAX_SAFE_INTEGER;
+          if (aTime !== bTime) return aTime - bTime;
 
-          if ((aScheduleRank === 0 || aScheduleRank === 1) && (bScheduleRank === 0 || bScheduleRank === 1)) {
-            const aScheduledAt = parseScheduleTimeForToday(a.scheduleTime);
-            const bScheduledAt = parseScheduleTimeForToday(b.scheduleTime);
-            const aScheduledTime = aScheduledAt ? aScheduledAt.valueOf() : Number.MAX_SAFE_INTEGER;
-            const bScheduledTime = bScheduledAt ? bScheduledAt.valueOf() : Number.MAX_SAFE_INTEGER;
-            if (aScheduledTime !== bScheduledTime) return aScheduledTime - bScheduledTime;
-          }
           const aPriority = typeof a.priority === 'number' ? a.priority : Number.MAX_SAFE_INTEGER;
           const bPriority = typeof b.priority === 'number' ? b.priority : Number.MAX_SAFE_INTEGER;
           if (aPriority !== bPriority) return aPriority - bPriority;
-
-          const aTime = a.plannedStartTime ? new Date(a.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
-          const bTime = b.plannedStartTime ? new Date(b.plannedStartTime).getTime() : Number.MAX_SAFE_INTEGER;
-          if (aTime !== bTime) return aTime - bTime;
 
           return a.title.localeCompare(b.title);
         })

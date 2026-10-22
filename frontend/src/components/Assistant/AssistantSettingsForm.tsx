@@ -14,7 +14,7 @@ import {
   Typography,
 } from '@mui/material';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { activitiesApi, assistantApi } from '../../services/api';
+import { activitiesApi, assistantApi, projectsApi } from '../../services/api';
 import type { AssistantSettings } from '../../types';
 import { apiErrorMessage } from './apiError';
 
@@ -25,11 +25,12 @@ export default function AssistantSettingsForm() {
   const { data: settings } = useQuery({ queryKey: ['assistantSettings'], queryFn: assistantApi.getSettings });
   const { data: activities = [] } = useQuery({ queryKey: ['activities'], queryFn: () => activitiesApi.getAll() });
   const { data: status } = useQuery({ queryKey: ['assistantStatus'], queryFn: assistantApi.status });
+  const { data: projects = [] } = useQuery({ queryKey: ['projects', 'assistant-default'], queryFn: () => projectsApi.getAll() });
   const [form, setForm] = useState<AssistantSettings | null>(null);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    if (settings) setForm({ ...settings, lunchActivity: settings.lunchActivity || '' });
+    if (settings) setForm({ ...settings, lunchActivity: settings.lunchActivity || '', defaultProject: settings.defaultProject || '' });
   }, [settings]);
 
   const save = useMutation({
@@ -94,6 +95,19 @@ export default function AssistantSettingsForm() {
           <Grid item xs={6} sm={3}>
             <TextField fullWidth type="number" label="Duración tarea por defecto" value={form.defaultTaskMinutes} onChange={(e) => set({ defaultTaskMinutes: Number(e.target.value) })} inputProps={{ min: 5, max: 480 }} />
           </Grid>
+          <Grid item xs={12} sm={6}>
+            <FormControl fullWidth>
+              <InputLabel shrink>Proyecto por defecto</InputLabel>
+              <Select label="Proyecto por defecto" notched displayEmpty value={form.defaultProject || ''} onChange={(e) => set({ defaultProject: e.target.value as string })}>
+                <MenuItem value="">"General" (se crea si no existe)</MenuItem>
+                {projects.filter((p) => !p.isArchived).map((p) => (
+                  <MenuItem key={p._id} value={p._id}>
+                    {p.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Grid>
           <Grid item xs={12}>
             <TextField
               fullWidth
@@ -108,7 +122,7 @@ export default function AssistantSettingsForm() {
         </Grid>
 
         <Box sx={{ mt: 2, display: 'flex', gap: 2, alignItems: 'center' }}>
-          <Button variant="contained" disabled={invalid || save.isPending} onClick={() => save.mutate({ ...form, lunchActivity: form.lunchActivity || '' })}>
+          <Button variant="contained" disabled={invalid || save.isPending} onClick={() => save.mutate({ ...form, lunchActivity: form.lunchActivity || '', defaultProject: form.defaultProject || '' })}>
             Guardar
           </Button>
           {saved && <Alert severity="success" sx={{ py: 0 }}>Guardado</Alert>}

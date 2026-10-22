@@ -13,6 +13,8 @@ const assistantSettingsSchema = new mongoose.Schema({
   bufferMinutes: { type: Number, default: 5 },
   // Default duration when a meeting/task has no estimate and none can be inferred
   defaultTaskMinutes: { type: Number, default: 30 },
+  // Project used for tasks the assistant has to create without a clear project
+  defaultProject: { type: mongoose.Schema.Types.ObjectId, ref: 'Project' },
   // Free text the assistant always keeps in mind ("los viernes no agendo reuniones")
   customInstructions: { type: String, default: '' }
 }, { timestamps: true });

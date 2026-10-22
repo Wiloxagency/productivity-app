@@ -2,6 +2,8 @@
 const toolkit = require('./toolkit');
 require('./tools.catalog');
 require('./tools.time');
+require('./tools.organize');
+require('./tools.memory');
 
 const executeTool = async (name, args, ctx) => {
   const executor = toolkit.EXECUTORS[name];

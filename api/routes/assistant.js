@@ -5,6 +5,7 @@ const AssistantConversation = require('../models/AssistantConversation');
 const AssistantSettings = require('../models/AssistantSettings');
 const TimeEntry = require('../models/TimeEntry');
 const QueueItem = require('../models/QueueItem');
+const AssistantMemory = require('../models/AssistantMemory');
 const { runTurn, visibleMessages } = require('../services/assistant');
 const { isConfigured, getConfig } = require('../services/assistant/llm');
 const { undoAction } = require('../services/recorder');
@@ -104,8 +105,52 @@ router.get('/plan/:date', async (req, res) => {
   }
 });
 
+// ---- memory (Settings › Asistente IA › Memoria)
+const MEMORY_KINDS = ['preference', 'style', 'habit', 'fact', 'reminder', 'note'];
+
+router.get('/memory', async (req, res) => {
+  const status = req.query.status === 'all' ? { $in: ['active', 'done', 'archived'] } : 'active';
+  res.json(await AssistantMemory.find({ status }).sort({ kind: 1, createdAt: -1 }).limit(300));
+});
+
+router.post('/memory', async (req, res) => {
+  const { kind = 'note', text, subject, minutes, dueDate } = req.body || {};
+  if (!text || !String(text).trim()) return res.status(400).json({ error: 'text es requerido' });
+  if (!MEMORY_KINDS.includes(kind)) return res.status(400).json({ error: 'kind inválido' });
+  if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return res.status(400).json({ error: 'dueDate debe ser YYYY-MM-DD' });
+  const memory = await AssistantMemory.create({
+    kind, text: String(text).trim(), subject: subject || undefined, minutes: Number(minutes) > 0 ? Math.round(minutes) : undefined,
+    dueDate: dueDate || undefined, oneShot: kind === 'reminder', source: 'user'
+  });
+  res.status(201).json(memory);
+});
+
+router.patch('/memory/:id', async (req, res) => {
+  const memory = await AssistantMemory.findById(req.params.id).catch(() => null);
+  if (!memory) return res.status(404).json({ error: 'No encontrado' });
+  const body = req.body || {};
+  if (body.text !== undefined) memory.text = String(body.text).trim();
+  if (body.subject !== undefined) memory.subject = body.subject || undefined;
+  if (body.minutes !== undefined) memory.minutes = Number(body.minutes) > 0 ? Math.round(body.minutes) : undefined;
+  if (body.dueDate !== undefined) memory.dueDate = body.dueDate || undefined;
+  if (body.status && ['active', 'done', 'archived'].includes(body.status)) memory.status = body.status;
+  await memory.save();
+  res.json(memory);
+});
+
+// Soft delete: the memory leaves the prompt but stays in the database
+router.delete('/memory/:id', async (req, res) => {
+  const memory = await AssistantMemory.findById(req.params.id).catch(() => null);
+  if (!memory) return res.status(404).json({ error: 'No encontrado' });
+  memory.status = 'archived';
+  memory.resolvedAt = new Date();
+  memory.resolution = 'borrado desde Settings';
+  await memory.save();
+  res.json({ ok: true });
+});
+
 // ---- settings
-const SETTINGS_FIELDS = ['timezone', 'workdayStart', 'workdayEnd', 'lunchTime', 'lunchDuration', 'lunchActivity', 'bufferMinutes', 'defaultTaskMinutes', 'customInstructions'];
+const SETTINGS_FIELDS = ['timezone', 'workdayStart', 'workdayEnd', 'lunchTime', 'lunchDuration', 'lunchActivity', 'bufferMinutes', 'defaultTaskMinutes', 'customInstructions', 'defaultProject'];
 
 router.get('/settings', async (req, res) => {
   res.json(await AssistantSettings.getSingleton());
@@ -120,7 +165,7 @@ router.put('/settings', async (req, res) => {
       if (body[f] !== undefined && !parseHHmm(body[f])) return res.status(400).json({ error: `${f} debe ser HH:mm` });
     }
     SETTINGS_FIELDS.forEach((f) => {
-      if (body[f] !== undefined) settings[f] = body[f] === '' && f === 'lunchActivity' ? undefined : body[f];
+      if (body[f] !== undefined) settings[f] = body[f] === '' && ['lunchActivity', 'defaultProject'].includes(f) ? undefined : body[f];
     });
     await settings.save();
     res.json(settings);

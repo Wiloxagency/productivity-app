@@ -187,6 +187,22 @@ const findEntryByName = async (name, ctx) => {
   return top.find((e) => e.isActive) || top[0];
 };
 
+// Project for tasks created without a clear project: Settings › Asistente IA,
+// else an existing "General"/"Inbox"/"Bandeja" project, else "General" (undoable).
+const DEFAULT_PROJECT_RE = /^(general|inbox|bandeja( de entrada)?|varios|personal)$/i;
+const getDefaultProject = async (ctx) => {
+  if (ctx.settings?.defaultProject) {
+    const p = await Project.findById(ctx.settings.defaultProject).catch(() => null);
+    if (p && !p.isArchived) return p;
+  }
+  const projects = await Project.find({ isArchived: false });
+  const named = projects.find((p) => DEFAULT_PROJECT_RE.test(p.name.trim()));
+  if (named) return named;
+  const project = await Project.create({ name: 'General', description: 'Tareas sin proyecto creadas por el asistente' });
+  ctx.rec.created(project);
+  return project;
+};
+
 // ---------------------------------------------------------------- registry
 const TOOLS = [];
 const EXECUTORS = {};
@@ -202,7 +218,7 @@ const obj = (properties, required = []) => ({ type: 'object', properties, requir
 
 module.exports = {
   fail, taskView, activityView, entryView, resolveWhen, findCategory, addTaskToPlanning, markPlanningCompleted,
-  backlogPriority, findEntryByName, completeInPlannings, TOOLS, EXECUTORS, define, str, num, bool, obj,
+  backlogPriority, findEntryByName, completeInPlannings, getDefaultProject, TOOLS, EXECUTORS, define, str, num, bool, obj,
   // re-exports used by the tool files
   crypto, Project, Task, Activity, TimeEntry, QueueItem, rankBySimilarity, zonedToUtc, localDateStr, localTimeStr,
   localDateTimeStr, dayBucket, addMinutes, timeline, buildDayPlan, getNextSuggestion, normalizePlanningOrder, DailyPlanning

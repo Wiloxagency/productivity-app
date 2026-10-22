@@ -92,7 +92,7 @@ const responsesCreate = async (cfg, { messages, tools }) => {
     input: toResponsesInput(messages),
     tools: toResponsesTools(tools),
     tool_choice: 'auto',
-    parallel_tool_calls: false,
+    parallel_tool_calls: true,
     store: false,
     include: ['reasoning.encrypted_content'],
     ...(cfg.reasoningEffort ? { reasoning: { effort: cfg.reasoningEffort } } : {})
@@ -132,7 +132,7 @@ const chatCreate = async (cfg, { messages, tools }) => {
       if (m.role === 'assistant' && m.tool_calls?.length) return { role: 'assistant', content: m.content || null, tool_calls: m.tool_calls };
       return { role: m.role, content: m.content || '' };
     }),
-    ...(tools && tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: false } : {}),
+    ...(tools && tools.length ? { tools, tool_choice: 'auto', parallel_tool_calls: true } : {}),
     ...(cfg.reasoningEffort ? { reasoning_effort: cfg.reasoningEffort } : {})
   };
   const json = await post(cfg, '/chat/completions', body);
